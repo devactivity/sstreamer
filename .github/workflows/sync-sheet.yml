@@ -68,5 +68,11 @@ jobs:
   deploy:
     needs: sync
     if: ${{ needs.sync.outputs.changed == 'true' }}
+    # A called workflow cannot request more than the calling job holds, and this
+    # job would otherwise fall back to the repo default (read-only). Must cover
+    # everything deploy.yml asks for, or the whole file fails validation.
+    permissions:
+      contents: read
+      deployments: write
     uses: ./.github/workflows/deploy.yml
     secrets: inherit
