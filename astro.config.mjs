@@ -3,8 +3,9 @@ import { defineConfig } from 'astro/config';
 
 // https://astro.build/config
 export default defineConfig({
-	// Update this once the Cloudflare Pages project exists.
-	site: 'https://streamer-scheduler.pages.dev',
+	// Canonical and hreflang URLs are generated from this, so it must match the
+	// deployed domain exactly.
+	site: 'https://sstreamer.pages.dev',
 	i18n: {
 		locales: ['id', 'en'],
 		defaultLocale: 'id',

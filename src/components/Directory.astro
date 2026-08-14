@@ -61,9 +61,19 @@ const filterGames = sortGames([...usedGameIds].map((id) => gameIndex.get(id)!).f
 ---
 
 <h1>{s.tagline}</h1>
-<p class="tagline">{s.streamerCount(entries.length)}</p>
+{entries.length > 0 && <p class="tagline">{s.streamerCount(entries.length)}</p>}
 
-<div class="controls" data-search-root>
+{/* Launch day is this state. A search box with nothing to search reads as broken,
+    so hide the controls entirely and point at the one useful action. */}
+{entries.length === 0 && (
+	<p class="first-run">
+		<strong>{s.emptyDirectory}</strong>
+		{' '}
+		<span class="muted">{s.emptyDirectoryHint}</span>
+	</p>
+)}
+
+<div class="controls" data-search-root hidden={entries.length === 0}>
 	<label class="sr-only" for="q">{s.searchLabel}</label>
 	<input
 		id="q"
@@ -88,7 +98,7 @@ const filterGames = sortGames([...usedGameIds].map((id) => gameIndex.get(id)!).f
 	</label>
 </div>
 
-<p class="disclaimer">{s.liveDisclaimer}</p>
+{entries.length > 0 && <p class="disclaimer">{s.liveDisclaimer}</p>}
 
 {filterGames.length > 0 && (
 	<nav class="browse-games" aria-label={s.browseGames}>
@@ -294,6 +304,22 @@ const filterGames = sortGames([...usedGameIds].map((id) => gameIndex.get(id)!).f
 		align-items: center;
 		gap: 0.5rem;
 		margin-bottom: 0.5rem;
+	}
+
+	.controls[hidden] {
+		display: none;
+	}
+
+	.first-run {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 1rem;
+		margin: 0 0 1.25rem;
+	}
+
+	.first-run .muted {
+		color: var(--muted);
 	}
 
 	.controls input[type='search'],

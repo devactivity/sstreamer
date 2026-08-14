@@ -19,6 +19,8 @@ const site = Astro.site?.origin ?? '';
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		{/* .ico for older browsers, .svg preferred by everything modern. */}
+		<link rel="icon" href="/favicon.ico" sizes="32x32" />
 		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 		<title>{title}</title>
 		{description && <meta name="description" content={description} />}

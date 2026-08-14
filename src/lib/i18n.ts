@@ -38,7 +38,7 @@ export { normalise } from './text';
 
 const dict = {
 	id: {
-		siteName: 'Jadwal Streamer',
+		siteName: 'Sstreamer',
 		tagline: 'Cari tahu kapan streamer game favoritmu live.',
 		searchPlaceholder: 'Cari nama streamer...',
 		searchLabel: 'Cari streamer',
@@ -115,9 +115,11 @@ const dict = {
 		sentEdit:
 			'Terkirim. Kalau kunci edit-mu cocok, perubahan tayang sekitar 15 menit. Kalau tidak, diperiksa manual dulu.',
 		sendFailed: 'Gagal mengirim. Coba lagi sebentar lagi.',
+		emptyDirectory: 'Belum ada streamer di sini.',
+		emptyDirectoryHint: 'Jadilah yang pertama, tulis namamu di bawah.',
 	},
 	en: {
-		siteName: 'Streamer Schedule',
+		siteName: 'Sstreamer',
 		tagline: 'Find out when your favourite game streamers go live.',
 		searchPlaceholder: 'Search streamer name...',
 		searchLabel: 'Search streamers',
@@ -195,6 +197,8 @@ const dict = {
 		sentEdit:
 			'Sent. If your edit key matched, the change appears in about 15 minutes. If not, it is reviewed by hand first.',
 		sendFailed: 'Could not send. Please try again shortly.',
+		emptyDirectory: 'No streamers here yet.',
+		emptyDirectoryHint: 'Be the first, add your name below.',
 	},
 } as const;
 
