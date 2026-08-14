@@ -1,8 +1,8 @@
 name: CI
 
+# Only pull requests: pushes to main are covered by deploy.yml, which runs the same
+# checks before shipping. Running both would just duplicate every job.
 on:
-  push:
-    branches: [main]
   pull_request:
 
 jobs:
@@ -14,7 +14,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
 
       - run: npm ci

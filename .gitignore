@@ -17,7 +17,15 @@ pnpm-debug.log*
 .env
 .env.production
 
-# service account keys. this repo is public: a committed key is a compromised key
+# service account keys. this repo is public: a committed key is a compromised key.
+# Google names its downloads <project>-<keyid>.json, which no sensible pattern
+# catches, so ignore every root-level .json and allow back the three we need.
+/*.json
+!/package.json
+!/package-lock.json
+!/tsconfig.json
+
+# and anywhere in the tree, for the obvious names
 *service-account*.json
 *-credentials.json
 *-key.json

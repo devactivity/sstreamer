@@ -22,13 +22,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
 
       - run: npm ci
@@ -46,10 +48,12 @@ jobs:
         run: npm run build
 
       - name: Commit changes
+        id: commit
         if: ${{ !inputs.dry_run }}
         run: |
           if [ -z "$(git status --porcelain src/data)" ]; then
             echo "no changes"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "github-actions[bot]"
@@ -57,3 +61,12 @@ jobs:
           git add src/data
           git commit -m "Sync streamer submissions"
           git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+  # A push made with GITHUB_TOKEN deliberately does not trigger other workflows,
+  # so synced content would sit in the repo undeployed. Call the deploy directly.
+  deploy:
+    needs: sync
+    if: ${{ needs.sync.outputs.changed == 'true' }}
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit

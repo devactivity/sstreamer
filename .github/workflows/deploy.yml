@@ -1,0 +1,51 @@
+name: Deploy
+
+# Cloudflare no longer offers a dashboard Git integration for Pages, so deploys go
+# through Direct Upload instead. That is arguably better: nothing ships unless the
+# tests and the schema validation pass first.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  # Called by sync-sheet.yml, because a push made with GITHUB_TOKEN does not
+  # trigger other workflows and the synced content would otherwise never deploy.
+  workflow_call:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Tests
+        run: npm test
+
+      - name: Types
+        run: npm run check
+
+      # Also validates every streamer and game file against the Zod schema.
+      - name: Build
+        run: npm run build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=sstreamer
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
