@@ -1,0 +1,8 @@
+name: Pokemon UNITE
+short: UNITE
+accent: "#f0a500"
+cover: ./covers/pokun.png
+aliases:
+  - unite
+  - pokun
+  - pokemon unite

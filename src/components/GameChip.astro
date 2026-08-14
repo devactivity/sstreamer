@@ -1,0 +1,108 @@
+---
+import { Image } from 'astro:assets';
+import type { Game } from '../lib/games';
+
+interface Props {
+	game: Game;
+	/** Hide the label and show art only, for tight rows like directory cards. */
+	compact?: boolean;
+	/**
+	 * Link the chip to a game page. Omit inside an existing <a> (directory cards),
+	 * since nested anchors are invalid HTML.
+	 */
+	href?: string;
+}
+
+const { game, compact = false, href } = Astro.props;
+const { name, short, accent, cover } = game.data;
+const Tag = href ? 'a' : 'span';
+---
+
+<Tag
+	class:list={['game-chip', compact && 'game-chip--compact', href && 'game-chip--link']}
+	href={href}
+	title={compact ? name : undefined}
+>
+	{
+		cover ? (
+			<Image src={cover} alt="" width={96} class="game-art" loading="lazy" decoding="async" />
+		) : (
+			<span class="game-art game-art--fallback" style={`--accent:${accent}`} aria-hidden="true">
+				{short}
+			</span>
+		)
+	}
+	{!compact && <span class="game-name">{name}</span>}
+	{compact && <span class="sr-only">{name}</span>}
+</Tag>
+
+<style>
+	.game-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 7px;
+		padding: 0.2rem 0.55rem 0.2rem 0.2rem;
+		font-size: 0.78rem;
+		color: var(--muted);
+		max-width: 100%;
+	}
+
+	.game-chip--compact {
+		padding: 0.2rem;
+	}
+
+	.game-chip--link {
+		text-decoration: none;
+	}
+
+	.game-chip--link:hover {
+		border-color: var(--accent);
+		color: var(--text);
+	}
+
+	/* 16:9 rather than a circle, so actual cover art stays readable at this size. */
+	.game-art {
+		flex: 0 0 auto;
+		width: 2.5rem;
+		height: 1.4rem;
+		border-radius: 4px;
+		object-fit: cover;
+		background: var(--surface);
+	}
+
+	.game-art--fallback {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		background: var(--accent);
+		color: #fff;
+		font-size: 0.58rem;
+		font-weight: 700;
+		letter-spacing: 0.01em;
+		text-align: center;
+		line-height: 1;
+		padding: 0.1rem 0.15rem;
+		user-select: none;
+	}
+
+	.game-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+</style>

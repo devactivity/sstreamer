@@ -1,0 +1,418 @@
+---
+import { t, PLATFORM_LABEL, type Lang } from '../lib/i18n';
+import { DAYS, PLATFORMS } from '../lib/constants';
+import { getGameIndex, sortGames } from '../lib/games';
+
+interface Props {
+	lang: Lang;
+}
+
+const { lang } = Astro.props;
+const s = t(lang);
+
+// A dropdown rather than free text, so submissions land on canonical slugs and
+// nobody has to reconcile "MLBB" against "mobile legend" during moderation.
+const games = sortGames([...(await getGameIndex()).values()]);
+---
+
+{/*
+  One field to start, per the agreed flow. Step 2 is revealed client-side the moment
+  step 1 is submitted - no rebuild wait, no return visit - because asking people to
+  come back later to finish is where profiles go to die.
+
+  TODO: POST both steps to the Google Forms endpoint once the sheet exists. Until then
+  the final submit says plainly that nothing is stored, rather than faking success.
+*/}
+<section class="claim" data-claim data-step2-template={s.claimStep2('{name}')}>
+	<h2>{s.claimCta}</h2>
+	<p class="claim-body">{s.claimCtaBody}</p>
+
+	<form data-step1>
+		<label class="field">
+			<span class="field-label">{s.claimNameLabel}</span>
+			<input type="text" name="name" required autocomplete="off" data-name-input />
+		</label>
+		<button type="submit">{s.claimSubmit}</button>
+	</form>
+
+	{/*
+	  Issued the moment the profile is created, shown once, never sent anywhere.
+	  Only its hash goes to the sheet, so there is genuinely no way to recover it.
+	*/}
+	<div class="key-panel" data-key-panel hidden>
+		<p class="key-title">{s.keyIssuedTitle}</p>
+		<div class="key-row">
+			<code data-key-value></code>
+			<button type="button" class="secondary" data-key-copy data-copied={s.keyCopied}>
+				{s.keyCopy}
+			</button>
+		</div>
+		<p class="key-body">{s.keyIssuedBody}</p>
+	</div>
+
+	<form data-step2 hidden>
+		<p class="step2-title" data-step2-title></p>
+		<p class="step2-hint">{s.claimStep2Hint}</p>
+
+		<div class="grid">
+			<label class="field">
+				<span class="field-label">{s.claimPlatformLabel}</span>
+				<select name="platform">
+					{PLATFORMS.map((p) => <option value={p}>{PLATFORM_LABEL[p] ?? p}</option>)}
+				</select>
+			</label>
+
+			<label class="field">
+				<span class="field-label">{s.claimHandleLabel}</span>
+				<input type="text" name="handle" autocomplete="off" />
+			</label>
+
+			<label class="field">
+				<span class="field-label">{s.claimGameLabel}</span>
+				<select name="game">
+					<option value="">-</option>
+					{games.map((g) => (
+						<option value={g.id}>{g.data.name}</option>
+					))}
+				</select>
+			</label>
+
+			<label class="field">
+				<span class="field-label">{s.claimTimeLabel}</span>
+				<input type="time" name="start" value="20:00" />
+			</label>
+		</div>
+
+		<fieldset class="days">
+			<legend class="field-label">{s.claimDaysLabel}</legend>
+			{DAYS.map((day, i) => (
+				<label class="day-toggle">
+					<input type="checkbox" name="days" value={day} />
+					<span>{s.dayShort[i]}</span>
+				</label>
+			))}
+		</fieldset>
+
+		<div class="actions">
+			<button type="submit">{s.claimSave}</button>
+			<button type="button" class="secondary" data-later>{s.claimLater}</button>
+		</div>
+	</form>
+
+	<p
+		class="pending"
+		data-pending
+		hidden
+		data-msg-preview={s.claimPending}
+		data-msg-sent={s.sentNew}
+		data-msg-failed={s.sendFailed}
+	>
+	</p>
+</section>
+
+<script>
+	import { generateEditKey, hashEditKey } from '../lib/edit-key';
+	import { SubmitNotConfiguredError, submitToForm } from '../lib/submit';
+	import { slugify } from '../lib/text';
+
+	(() => {
+		const root = document.querySelector<HTMLElement>('[data-claim]');
+		if (!root) return;
+
+		const step1 = root.querySelector<HTMLFormElement>('[data-step1]');
+		const step2 = root.querySelector<HTMLFormElement>('[data-step2]');
+		const pending = root.querySelector<HTMLElement>('[data-pending]');
+		const title = root.querySelector<HTMLElement>('[data-step2-title]');
+		const nameInput = root.querySelector<HTMLInputElement>('[data-name-input]');
+		const keyPanel = root.querySelector<HTMLElement>('[data-key-panel]');
+		const keyValue = root.querySelector<HTMLElement>('[data-key-value]');
+		const copyBtn = root.querySelector<HTMLButtonElement>('[data-key-copy]');
+		const step2Template = root.dataset.step2Template ?? '{name}';
+
+		/** Hash of the key issued this session, to accompany the submission. */
+		let keyHash = '';
+		let claimedName = '';
+		/** True once a send failed only because the form isn't wired up yet. */
+		let previewOnly = false;
+
+		const finish = (outcome: 'sent' | 'preview' | 'failed') => {
+			if (!pending) return;
+			pending.textContent =
+				outcome === 'sent'
+					? (pending.dataset.msgSent ?? '')
+					: outcome === 'preview'
+						? (pending.dataset.msgPreview ?? '')
+						: (pending.dataset.msgFailed ?? '');
+			pending.hidden = false;
+		};
+
+		/**
+		 * Resolving means the request left the browser, not that the form accepted it -
+		 * Google Forms sends no CORS headers, so the response is opaque. Anything the
+		 * UI says afterwards has to stay on the right side of that.
+		 */
+		const send = async (fields: Parameters<typeof submitToForm>[0]) => {
+			try {
+				await submitToForm(fields);
+				return 'sent' as const;
+			} catch (err) {
+				if (err instanceof SubmitNotConfiguredError) {
+					previewOnly = true;
+					return 'preview' as const;
+				}
+				return 'failed' as const;
+			}
+		};
+
+		const checkedDays = (form: HTMLFormElement) =>
+			[...form.querySelectorAll<HTMLInputElement>('input[name="days"]:checked')]
+				.map((el) => el.value)
+				.join('|');
+
+		step1?.addEventListener('submit', async (event) => {
+			event.preventDefault();
+			const name = nameInput?.value.trim();
+			if (!name) return;
+			claimedName = name;
+
+			// Generated here and displayed once. The raw key never leaves this page:
+			// only keyHash is ever submitted.
+			const key = generateEditKey();
+			keyHash = await hashEditKey(key);
+			if (keyValue) keyValue.textContent = key;
+			if (keyPanel) keyPanel.hidden = false;
+
+			// Sent now rather than with step 2, so the profile exists even if they
+			// abandon the rest. The sync applies both rows to the same slug in order.
+			const outcome = await send({ name, slug: slugify(name), edit_key_hash: keyHash });
+			if (outcome === 'failed') {
+				finish('failed');
+				return;
+			}
+
+			if (title) title.textContent = step2Template.replace('{name}', name);
+			step1.hidden = true;
+			if (step2) step2.hidden = false;
+		});
+
+		copyBtn?.addEventListener('click', async () => {
+			if (!keyValue?.textContent) return;
+			try {
+				await navigator.clipboard.writeText(keyValue.textContent);
+				const original = copyBtn.textContent;
+				copyBtn.textContent = copyBtn.dataset.copied ?? 'Copied';
+				setTimeout(() => {
+					copyBtn.textContent = original;
+				}, 2000);
+			} catch {
+				// Clipboard blocked (insecure context, denied permission): the key is
+				// still on screen to copy by hand, so there is nothing to recover from.
+			}
+		});
+
+		step2?.addEventListener('submit', async (event) => {
+			event.preventDefault();
+			const data = new FormData(step2);
+			const value = (key: string) => String(data.get(key) ?? '');
+
+			const outcome = await send({
+				slug: slugify(claimedName),
+				name: claimedName,
+				edit_key_hash: keyHash,
+				platform: value('platform'),
+				handle: value('handle'),
+				game: value('game'),
+				games: value('game'),
+				start: value('start'),
+				days: checkedDays(step2),
+			});
+
+			step2.hidden = true;
+			finish(outcome);
+		});
+
+		root.querySelector('[data-later]')?.addEventListener('click', () => {
+			if (step2) step2.hidden = true;
+			// Step 1 already went through, so this is only "sent" if that succeeded.
+			finish(previewOnly ? 'preview' : 'sent');
+		});
+	})();
+</script>
+
+<style>
+	.claim {
+		margin-top: 2.5rem;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 1.1rem;
+	}
+
+	.claim h2 {
+		margin: 0 0 0.25rem;
+		font-size: 1.05rem;
+		text-transform: none;
+		letter-spacing: normal;
+		color: var(--text);
+	}
+
+	.claim-body {
+		margin: 0 0 0.9rem;
+		color: var(--muted);
+		font-size: 0.9rem;
+	}
+
+	form[hidden],
+	.pending[hidden] {
+		display: none;
+	}
+
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.field-label {
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: var(--muted);
+	}
+
+	input[type='text'],
+	input[type='time'],
+	select {
+		font: inherit;
+		font-size: 1rem; /* 16px stops iOS Safari zooming on focus */
+		color: var(--text);
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.6rem 0.7rem;
+		width: 100%;
+	}
+
+	button {
+		font: inherit;
+		font-weight: 600;
+		cursor: pointer;
+		background: var(--accent);
+		color: var(--accent-fg);
+		border: 1px solid transparent;
+		border-radius: var(--radius);
+		padding: 0.6rem 1.1rem;
+	}
+
+	button.secondary {
+		background: transparent;
+		color: var(--muted);
+		border-color: var(--border);
+	}
+
+	[data-step1] {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-end;
+		gap: 0.5rem;
+	}
+
+	[data-step1] .field {
+		flex: 1 1 14rem;
+		min-width: 0;
+	}
+
+	.key-panel {
+		background: color-mix(in srgb, var(--warn) 10%, transparent);
+		border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+		border-radius: var(--radius);
+		padding: 0.8rem 0.9rem;
+		margin-bottom: 1rem;
+	}
+
+	.key-panel[hidden] {
+		display: none;
+	}
+
+	.key-title {
+		margin: 0 0 0.5rem;
+		font-weight: 700;
+	}
+
+	.key-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		margin-bottom: 0.5rem;
+	}
+
+	.key-row code {
+		flex: 1 1 16rem;
+		min-width: 0;
+		overflow-wrap: anywhere;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.95rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.5rem 0.6rem;
+		user-select: all;
+	}
+
+	.key-body {
+		margin: 0;
+		font-size: 0.82rem;
+		color: var(--muted);
+	}
+
+	.step2-title {
+		margin: 0 0 0.2rem;
+		font-weight: 600;
+	}
+
+	.step2-hint {
+		margin: 0 0 0.9rem;
+		font-size: 0.82rem;
+		color: var(--muted);
+	}
+
+	.grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+		gap: 0.7rem;
+		margin-bottom: 0.9rem;
+	}
+
+	.days {
+		border: 0;
+		padding: 0;
+		margin: 0 0 1rem;
+	}
+
+	.days legend {
+		padding: 0;
+		margin-bottom: 0.4rem;
+	}
+
+	.day-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		margin-right: 0.6rem;
+		font-size: 0.9rem;
+	}
+
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
+	.pending {
+		margin: 0;
+		font-size: 0.88rem;
+		color: var(--muted);
+	}
+</style>

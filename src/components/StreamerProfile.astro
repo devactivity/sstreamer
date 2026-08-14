@@ -1,0 +1,235 @@
+---
+import ScheduleList from './ScheduleList.astro';
+import Avatar from './Avatar.astro';
+import GameChip from './GameChip.astro';
+import EditProfileForm from './EditProfileForm.astro';
+import { upcomingOccurrences, hasSchedule, staleness, type Streamer } from '../lib/schedule';
+import { getGameIndex, resolveGames } from '../lib/games';
+import { t, channelUrl, PLATFORM_LABEL, localePath, type Lang } from '../lib/i18n';
+
+interface Props {
+	lang: Lang;
+	entry: Streamer;
+}
+
+const { lang, entry } = Astro.props;
+const s = t(lang);
+const d = entry.data;
+
+const occurrences = upcomingOccurrences(d);
+const complete = hasSchedule(d);
+const age = staleness(d.updated);
+
+const gameIndex = await getGameIndex();
+const games = resolveGames(gameIndex, d.games);
+
+// Same three-window budget as the directory card; the browser decides what's live.
+const windows = occurrences
+	.filter((o) => o.status !== 'cancelled')
+	.slice(0, 3)
+	.map((o) => `${o.startUtc},${o.endUtc}`)
+	.join('|');
+---
+
+<nav class="crumb">
+	<a href={localePath(lang, '/')}>&lt;- {s.backToDirectory}</a>
+</nav>
+
+<header class="profile-head" data-live-root data-occ={windows}>
+	<div class="identity">
+		<Avatar name={d.name} src={d.avatar} size={64} />
+		<div class="identity-text">
+			<h1>
+				{d.name}
+				{d.verified && <span class="badge badge--verified">{s.verified}</span>}
+				<span class="badge badge--live" data-live-badge hidden title={s.liveNowTitle}>
+					{s.liveNow}
+				</span>
+			</h1>
+			{d.aliases.length > 0 && (
+				<p class="aliases">
+					<span class="aliases-label">{s.alsoKnownAs}:</span> {d.aliases.join(', ')}
+				</p>
+			)}
+		</div>
+	</div>
+
+	{d.bio && <p class="bio">{d.bio}</p>}
+
+	{games.length > 0 && (
+		<div class="game-row">
+			{games.map((g) => (
+				<GameChip game={g} href={localePath(lang, `/g/${g.id}`)} />
+			))}
+		</div>
+	)}
+
+	<p class="meta-row">
+		<span class:list={['badge', age.level !== 'fresh' && `badge--${age.level}`]}>
+			{s.updatedAgo(age.days)}
+		</span>
+	</p>
+</header>
+
+{d.channels.length > 0 && (
+	<section class="channels">
+		<h2>{s.channels}</h2>
+		<ul>
+			{d.channels.map((c) => (
+				<li>
+					<a href={channelUrl(c.platform, c.handle, c.url)} rel="noopener nofollow" target="_blank">
+						<span class="channel-platform">{PLATFORM_LABEL[c.platform] ?? c.platform}</span>
+						<span class="channel-handle">{c.handle}</span>
+					</a>
+				</li>
+			))}
+		</ul>
+	</section>
+)}
+
+<section class="schedule-section">
+	<h2>{s.upcoming}</h2>
+
+	{age.level === 'stale' && complete && (
+		<p class="warn-banner">
+			<strong>{s.unconfirmed}.</strong> {s.unconfirmedLong}
+		</p>
+	)}
+
+	{complete ? (
+		<ScheduleList lang={lang} occurrences={occurrences} timezone={d.timezone} />
+	) : (
+		<p class="empty">{s.noScheduleLong}</p>
+	)}
+</section>
+
+<EditProfileForm lang={lang} entry={entry} />
+
+<style>
+	.crumb {
+		font-size: 0.85rem;
+		margin: 0.5rem 0 0;
+	}
+
+	.crumb a {
+		text-decoration: none;
+		color: var(--muted);
+	}
+
+	.crumb a:hover {
+		color: var(--accent);
+	}
+
+	.identity {
+		display: flex;
+		align-items: center;
+		gap: 0.85rem;
+		margin-top: 0.6rem;
+	}
+
+	.identity-text {
+		min-width: 0;
+	}
+
+	.profile-head h1 {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 0.55rem;
+		margin: 0 0 0.15rem;
+	}
+
+	.aliases {
+		margin: 0;
+		font-size: 0.85rem;
+		color: var(--muted);
+	}
+
+	.aliases-label {
+		font-weight: 600;
+	}
+
+	.bio {
+		margin: 0.75rem 0 0;
+	}
+
+	.game-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+		margin-top: 0.85rem;
+	}
+
+	.meta-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.4rem;
+		margin: 0.75rem 0 1.5rem;
+	}
+
+	h2 {
+		font-size: 0.8rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--muted);
+		margin: 0 0 0.6rem;
+	}
+
+	.channels {
+		margin-bottom: 1.75rem;
+	}
+
+	.channels ul {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
+	.channels a {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 0.4rem;
+		text-decoration: none;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.45rem 0.7rem;
+		font-size: 0.85rem;
+	}
+
+	.channels a:hover {
+		border-color: var(--accent);
+	}
+
+	.channel-platform {
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.channel-handle {
+		color: var(--muted);
+		font-size: 0.8rem;
+	}
+
+	.warn-banner {
+		background: color-mix(in srgb, var(--warn) 12%, transparent);
+		border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+		border-radius: var(--radius);
+		padding: 0.7rem 0.85rem;
+		font-size: 0.85rem;
+		margin: 0 0 1rem;
+	}
+
+	.empty {
+		color: var(--muted);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 1rem;
+		margin: 0;
+	}
+</style>

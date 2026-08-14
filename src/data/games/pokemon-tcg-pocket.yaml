@@ -1,0 +1,8 @@
+name: Pokemon TCG Pocket
+short: PTCGP
+accent: "#e05a2b"
+cover: ./covers/tcgp.png
+aliases:
+  - tcg
+  - pokemon tcgp
+  - tcg pocket

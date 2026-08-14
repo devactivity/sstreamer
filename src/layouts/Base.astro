@@ -1,0 +1,456 @@
+---
+import { t, localePath, type Lang } from '../lib/i18n';
+
+interface Props {
+	lang: Lang;
+	title: string;
+	description?: string;
+	/** Language-neutral path, e.g. "/" or "/s/rizky-plays". Used for hreflang + the switcher. */
+	path: string;
+}
+
+const { lang, title, description, path } = Astro.props;
+const s = t(lang);
+const other: Lang = lang === 'id' ? 'en' : 'id';
+const site = Astro.site?.origin ?? '';
+---
+
+<html lang={lang}>
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<title>{title}</title>
+		{description && <meta name="description" content={description} />}
+		<link rel="alternate" hreflang="id" href={`${site}${localePath('id', path)}`} />
+		<link rel="alternate" hreflang="en" href={`${site}${localePath('en', path)}`} />
+		<link rel="alternate" hreflang="x-default" href={`${site}${localePath('id', path)}`} />
+		<meta property="og:title" content={title} />
+		{description && <meta property="og:description" content={description} />}
+		<meta property="og:type" content="website" />
+
+		{/*
+		  Must be inline and in <head>: a bundled script runs after first paint, which
+		  would flash the wrong theme before correcting itself.
+		*/}
+		<script is:inline>
+			(() => {
+				try {
+					const saved = localStorage.getItem('theme');
+					if (saved === 'light' || saved === 'dark') {
+						document.documentElement.dataset.theme = saved;
+					}
+				} catch {
+					// Private mode or storage disabled: fall back to the OS preference.
+				}
+			})();
+		</script>
+	</head>
+	<body>
+		<header class="site-header">
+			<a class="brand" href={localePath(lang, '/')}>{s.siteName}</a>
+			<div class="header-actions">
+				<button
+					type="button"
+					class="theme-toggle"
+					data-theme-toggle
+					data-label-system={s.themeSystem}
+					data-label-light={s.themeLight}
+					data-label-dark={s.themeDark}
+					aria-label={s.themeLabel}
+					title={s.themeLabel}
+				>
+					<span data-theme-text>{s.themeSystem}</span>
+				</button>
+				<a class="lang-switch" href={localePath(other, path)} hreflang={other} lang={other}>
+					{s.otherLang}
+				</a>
+			</div>
+		</header>
+
+		<main>
+			<slot />
+		</main>
+
+		<footer class="site-footer">
+			<p>
+				{s.siteName} <span class="sep">/</span>
+				<a href="/export.csv">{s.dataExport}</a>
+			</p>
+		</footer>
+
+		<script>
+			import { liveWindow, parseWindows, tick } from '../lib/live-client';
+
+			// Cycles system -> light -> dark. "system" is the absence of data-theme, so
+			// removing the key hands control back to prefers-color-scheme.
+			const themeButton = document.querySelector<HTMLButtonElement>('[data-theme-toggle]');
+			if (themeButton) {
+				const order = ['system', 'light', 'dark'] as const;
+				const labels: Record<string, string> = {
+					system: themeButton.dataset.labelSystem ?? 'System',
+					light: themeButton.dataset.labelLight ?? 'Light',
+					dark: themeButton.dataset.labelDark ?? 'Dark',
+				};
+				const text = themeButton.querySelector<HTMLElement>('[data-theme-text]');
+
+				const read = (): string => {
+					try {
+						const saved = localStorage.getItem('theme');
+						return saved === 'light' || saved === 'dark' ? saved : 'system';
+					} catch {
+						return 'system';
+					}
+				};
+
+				const paint = (theme: string) => {
+					if (theme === 'system') delete document.documentElement.dataset.theme;
+					else document.documentElement.dataset.theme = theme;
+					if (text) text.textContent = labels[theme] ?? theme;
+					themeButton.dataset.theme = theme;
+				};
+
+				paint(read());
+
+				themeButton.addEventListener('click', () => {
+					const next = order[(order.indexOf(read() as never) + 1) % order.length];
+					try {
+						if (next === 'system') localStorage.removeItem('theme');
+						else localStorage.setItem('theme', next);
+					} catch {
+						// Storage unavailable: the choice just won't persist across loads.
+					}
+					paint(next);
+				});
+			}
+
+			// Any element can opt into the live badge by carrying a streamer's upcoming
+			// windows on [data-live-root]. Evaluated in the browser, because a static
+			// build's idea of "now" is stale the moment it finishes. Multiple roots are
+			// supported so a game page can badge every streamer in its roster.
+			const liveRoots = [...document.querySelectorAll<HTMLElement>('[data-live-root]')]
+				.map((root) => ({
+					badge: root.querySelector<HTMLElement>('[data-live-badge]'),
+					windows: parseWindows(root.dataset.occ),
+					root,
+				}))
+				.filter((r) => r.badge);
+
+			if (liveRoots.length > 0) {
+				tick(() => {
+					const now = Date.now();
+					for (const { root, badge, windows } of liveRoots) {
+						const live = Boolean(liveWindow(windows, now));
+						badge!.hidden = !live;
+						root.classList.toggle('is-live', live);
+					}
+				});
+			}
+
+			// Every time on the site is rendered at build time in the streamer's own zone,
+			// then rewritten here into the viewer's. Without JS the page still shows a
+			// correct, explicitly-labelled WIB/WITA/WIT time - just not personalised.
+			const nodes = document.querySelectorAll<HTMLElement>('[data-start]');
+			if (nodes.length > 0) {
+				const lang = document.documentElement.lang === 'id' ? 'id-ID' : 'en-GB';
+				const time = new Intl.DateTimeFormat(lang, {
+					hour: '2-digit',
+					minute: '2-digit',
+					hour12: false,
+				});
+				const dated = new Intl.DateTimeFormat(lang, {
+					weekday: 'short',
+					day: 'numeric',
+					month: 'short',
+					hour: '2-digit',
+					minute: '2-digit',
+					hour12: false,
+				});
+				const zone =
+					new Intl.DateTimeFormat(lang, { timeZoneName: 'short' })
+						.formatToParts(Date.now())
+						.find((p) => p.type === 'timeZoneName')?.value ?? '';
+
+				for (const el of nodes) {
+					const start = Number(el.dataset.start);
+					if (!Number.isFinite(start)) continue;
+					const end = Number(el.dataset.end);
+
+					if (el.dataset.withDate !== undefined) {
+						el.textContent = `${dated.format(start)} ${zone}`;
+					} else if (Number.isFinite(end)) {
+						el.textContent = `${time.format(start)}-${time.format(end)} ${zone}`;
+					} else {
+						el.textContent = `${time.format(start)} ${zone}`;
+					}
+				}
+			}
+		</script>
+	</body>
+</html>
+
+<style is:global>
+	/*
+	 * Three theme states: no data-theme means follow the OS, data-theme="light" and
+	 * data-theme="dark" are explicit overrides. Dark values appear twice on purpose -
+	 * once for the OS preference, once for the manual override - because a media query
+	 * cannot be overridden by an attribute selector without repeating the declarations.
+	 *
+	 * Anything colour-related belongs here rather than in a component's own media
+	 * query, or the manual toggle silently misses it.
+	 */
+	:root {
+		color-scheme: light;
+		--bg: #ffffff;
+		--surface: #f6f7f9;
+		--border: #e2e5ea;
+		--text: #16181d;
+		--muted: #626977;
+		--accent: #6d3bef;
+		--accent-fg: #ffffff;
+		--ok: #12794a;
+		--warn: #8a5a00;
+		--danger: #b3261e;
+		--radius: 10px;
+
+		/* Generated avatar / game tiles, composed against a per-element --hue. */
+		--tile-s-fg: 70%;
+		--tile-l-fg: 24%;
+		--tile-s-bg: 62%;
+		--tile-l-bg: 78%;
+		--tile-s-br: 45%;
+		--tile-l-br: 68%;
+	}
+
+	@media (prefers-color-scheme: dark) {
+		:root:not([data-theme='light']) {
+			color-scheme: dark;
+			--bg: #101216;
+			--surface: #191c22;
+			--border: #2a2f38;
+			--text: #eceef2;
+			--muted: #99a1b0;
+			--accent: #a98bff;
+			--accent-fg: #14101f;
+			--ok: #4ecb8d;
+			--warn: #e0a33a;
+			--danger: #ff8a80;
+
+			--tile-s-fg: 75%;
+			--tile-l-fg: 86%;
+			--tile-s-bg: 38%;
+			--tile-l-bg: 28%;
+			--tile-s-br: 32%;
+			--tile-l-br: 40%;
+		}
+	}
+
+	:root[data-theme='dark'] {
+		color-scheme: dark;
+		--bg: #101216;
+		--surface: #191c22;
+		--border: #2a2f38;
+		--text: #eceef2;
+		--muted: #99a1b0;
+		--accent: #a98bff;
+		--accent-fg: #14101f;
+		--ok: #4ecb8d;
+		--warn: #e0a33a;
+		--danger: #ff8a80;
+
+		--tile-s-fg: 75%;
+		--tile-l-fg: 86%;
+		--tile-s-bg: 38%;
+		--tile-l-bg: 28%;
+		--tile-s-br: 32%;
+		--tile-l-br: 40%;
+	}
+
+	*,
+	*::before,
+	*::after {
+		box-sizing: border-box;
+	}
+
+	body {
+		margin: 0;
+		background: var(--bg);
+		color: var(--text);
+		font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+		line-height: 1.5;
+		-webkit-text-size-adjust: 100%;
+	}
+
+	main {
+		max-width: 46rem;
+		margin: 0 auto;
+		padding: 1rem 1rem 3rem;
+	}
+
+	a {
+		color: var(--accent);
+	}
+
+	.site-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		max-width: 46rem;
+		margin: 0 auto;
+		padding: 0.9rem 1rem;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.brand {
+		font-weight: 700;
+		font-size: 1.05rem;
+		color: var(--text);
+		text-decoration: none;
+	}
+
+	.header-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+
+	.lang-switch,
+	.theme-toggle {
+		font-size: 0.85rem;
+		font-family: inherit;
+		color: var(--muted);
+		background: transparent;
+		text-decoration: none;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		padding: 0.25rem 0.7rem;
+		white-space: nowrap;
+	}
+
+	.theme-toggle {
+		cursor: pointer;
+		line-height: 1.5;
+	}
+
+	.lang-switch:hover,
+	.theme-toggle:hover {
+		color: var(--text);
+		border-color: var(--muted);
+	}
+
+	.theme-toggle:focus-visible,
+	.lang-switch:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 1px;
+	}
+
+	/* Only the explicit choices read as "on"; system is the neutral default. */
+	.theme-toggle[data-theme='light'],
+	.theme-toggle[data-theme='dark'] {
+		color: var(--text);
+		border-color: var(--muted);
+	}
+
+	.site-footer {
+		max-width: 46rem;
+		margin: 0 auto;
+		padding: 1.5rem 1rem 2.5rem;
+		border-top: 1px solid var(--border);
+		color: var(--muted);
+		font-size: 0.85rem;
+	}
+
+	.site-footer p {
+		margin: 0;
+	}
+
+	.site-footer .sep {
+		opacity: 0.5;
+		margin: 0 0.2rem;
+	}
+
+	h1 {
+		font-size: 1.6rem;
+		line-height: 1.2;
+		margin: 0.6rem 0 0.3rem;
+	}
+
+	.tagline {
+		color: var(--muted);
+		margin: 0 0 1.25rem;
+	}
+
+	/* Badges */
+	.badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.01em;
+		border-radius: 999px;
+		padding: 0.15rem 0.55rem;
+		border: 1px solid var(--border);
+		color: var(--muted);
+		white-space: nowrap;
+	}
+
+	.badge--verified {
+		color: var(--ok);
+		border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+	}
+
+	.badge--aging {
+		color: var(--warn);
+		border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+	}
+
+	.badge--stale {
+		color: var(--danger);
+		border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+	}
+
+	.badge--empty {
+		color: var(--muted);
+		background: var(--surface);
+	}
+
+	/* Schedule-derived only. The wording and the disclaimer beside it carry that
+	   caveat; this just makes it findable at a glance. */
+	.badge--live {
+		color: var(--ok);
+		border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+		background: color-mix(in srgb, var(--ok) 10%, transparent);
+	}
+
+	.badge--live::before {
+		content: '';
+		width: 0.42rem;
+		height: 0.42rem;
+		border-radius: 50%;
+		background: var(--ok);
+		animation: live-pulse 2s ease-in-out infinite;
+	}
+
+	@keyframes live-pulse {
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.3;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.badge--live::before {
+			animation: none;
+		}
+	}
+
+	/* .badge is inline-flex, which would otherwise defeat the hidden attribute. */
+	.badge[hidden] {
+		display: none;
+	}
+</style>

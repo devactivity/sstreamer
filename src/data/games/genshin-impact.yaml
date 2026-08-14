@@ -1,0 +1,6 @@
+name: Genshin Impact
+short: GI
+accent: "#4a7fd4"
+cover: ./covers/genshin-impact.png
+aliases:
+  - genshin

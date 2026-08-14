@@ -1,0 +1,456 @@
+---
+import ClaimForm from './ClaimForm.astro';
+import Avatar from './Avatar.astro';
+import GameChip from './GameChip.astro';
+import { upcomingOccurrences, hasSchedule, staleness, type Streamer } from '../lib/schedule';
+import { getGameIndex, resolveGames, gameSearchTerms, sortGames } from '../lib/games';
+import { t, locale, localePath, normalise, ZONE_LABEL, type Lang } from '../lib/i18n';
+
+interface Props {
+	lang: Lang;
+	entries: Streamer[];
+}
+
+const { lang, entries } = Astro.props;
+const s = t(lang);
+const loc = locale(lang);
+const gameIndex = await getGameIndex();
+
+const cards = entries.map((entry) => {
+	const d = entry.data;
+	const games = resolveGames(gameIndex, d.games);
+	const upcoming = upcomingOccurrences(d, { days: 14 });
+
+	// Three windows is enough for the browser to resolve both "live now" and "next up"
+	// even if this build is hours old, and costs ~60 bytes per card on mobile data.
+	const windows = upcoming
+		.filter((o) => o.status !== 'cancelled')
+		.slice(0, 3)
+		.map((o) => `${o.startUtc},${o.endUtc}`)
+		.join('|');
+
+	return {
+		entry,
+		games,
+		windows,
+		next: upcoming.find((o) => o.status !== 'cancelled'),
+		complete: hasSchedule(d),
+		age: staleness(d.updated),
+		// Everything a search should match on, pre-normalised at build time. Game
+		// aliases are in here too, so "mlbb" or "ptcgp" finds the right streamers.
+		haystack: normalise(
+			[d.name, ...d.aliases, ...games.flatMap((g) => gameSearchTerms(g))].join(' '),
+		),
+	};
+});
+
+// Complete profiles first, soonest stream first. Bare stubs sink to the bottom -
+// they still need a page and a claim URL, but they must never outrank real schedules.
+cards.sort((a, b) => {
+	if (a.complete !== b.complete) return a.complete ? -1 : 1;
+	if (a.next && b.next) return a.next.startUtc - b.next.startUtc;
+	if (a.next) return -1;
+	if (b.next) return 1;
+	return a.entry.data.name.localeCompare(b.entry.data.name);
+});
+
+// Only offer games somebody actually streams, so neither the filter nor the browse
+// row can lead to an empty page.
+const usedGameIds = new Set(cards.flatMap((c) => c.games.map((g) => g.id)));
+const filterGames = sortGames([...usedGameIds].map((id) => gameIndex.get(id)!).filter(Boolean));
+---
+
+<h1>{s.tagline}</h1>
+<p class="tagline">{s.streamerCount(entries.length)}</p>
+
+<div class="controls" data-search-root>
+	<label class="sr-only" for="q">{s.searchLabel}</label>
+	<input
+		id="q"
+		type="search"
+		autocomplete="off"
+		placeholder={s.searchPlaceholder}
+		data-search-input
+	/>
+
+	{filterGames.length > 0 && (
+		<select data-game-filter aria-label={s.allGames}>
+			<option value="">{s.allGames}</option>
+			{filterGames.map((g) => (
+				<option value={g.id}>{g.data.name}</option>
+			))}
+		</select>
+	)}
+
+	<label class="live-toggle">
+		<input type="checkbox" data-live-filter />
+		<span>{s.filterLive}</span>
+	</label>
+</div>
+
+<p class="disclaimer">{s.liveDisclaimer}</p>
+
+{filterGames.length > 0 && (
+	<nav class="browse-games" aria-label={s.browseGames}>
+		<span class="browse-label">{s.browseGames}</span>
+		{filterGames.map((g) => (
+			<GameChip game={g} href={localePath(lang, `/g/${g.id}`)} />
+		))}
+	</nav>
+)}
+
+<ul class="cards" data-cards>
+	{cards.map(({ entry, games, next, complete, age, haystack, windows }) => {
+		const d = entry.data;
+		const zone = ZONE_LABEL[d.timezone] ?? d.timezone;
+		return (
+			<li
+				class="card"
+				data-card
+				data-haystack={haystack}
+				data-games={games.map((g) => g.id).join('|')}
+				data-occ={windows}
+			>
+				<a href={localePath(lang, `/s/${entry.id}`)}>
+					<Avatar name={d.name} src={d.avatar} size={44} />
+
+					<span class="card-body">
+						<span class="card-name">
+							{d.name}
+							{d.verified && <span class="badge badge--verified">{s.verified}</span>}
+							<span class="badge badge--live" data-live-badge hidden title={s.liveNowTitle}>
+								{s.liveNow}
+							</span>
+						</span>
+
+						{complete ? (
+							<span class="card-next" data-next-wrap hidden={!next}>
+								<span class="card-next-label">{s.nextStream}</span>
+								<time
+									data-next-time
+									datetime={next ? new Date(next.startUtc).toISOString() : undefined}
+									data-start={next?.startUtc}
+									data-with-date
+								>
+									{next
+										? `${new Intl.DateTimeFormat(loc, {
+												timeZone: d.timezone,
+												weekday: 'short',
+												day: 'numeric',
+												month: 'short',
+												hour: '2-digit',
+												minute: '2-digit',
+												hour12: false,
+											}).format(next.startUtc)} ${zone}`
+										: ''}
+								</time>
+							</span>
+						) : (
+							<span class="badge badge--empty">{s.noSchedule}</span>
+						)}
+
+						<span class="card-meta">
+							{games.map((g) => (
+								<GameChip game={g} compact />
+							))}
+							{age.level !== 'fresh' && (
+								<span class:list={['badge', `badge--${age.level}`]}>
+									{age.level === 'stale' ? s.unconfirmed : s.updatedAgo(age.days)}
+								</span>
+							)}
+						</span>
+					</span>
+				</a>
+			</li>
+		);
+	})}
+</ul>
+
+<p class="no-results" data-no-results hidden>
+	{s.noResults} <span class="muted">{s.noResultsHint}</span>
+</p>
+
+<p class="no-results" data-none-live hidden>{s.noneLive}</p>
+
+<ClaimForm lang={lang} />
+
+<script>
+	import { normalise } from '../lib/text';
+	import {
+		docLang,
+		liveWindow,
+		nextWindow,
+		parseWindows,
+		tick,
+		viewerZoneName,
+	} from '../lib/live-client';
+
+	const root = document.querySelector<HTMLElement>('[data-search-root]');
+	const list = document.querySelector<HTMLElement>('[data-cards]');
+	const noResults = document.querySelector<HTMLElement>('[data-no-results]');
+	const noneLive = document.querySelector<HTMLElement>('[data-none-live]');
+
+	if (root && list) {
+		const input = root.querySelector<HTMLInputElement>('[data-search-input]');
+		const gameFilter = root.querySelector<HTMLSelectElement>('[data-game-filter]');
+		const liveFilter = root.querySelector<HTMLInputElement>('[data-live-filter]');
+		const cards = [...list.querySelectorAll<HTMLElement>('[data-card]')];
+
+		const lang = docLang();
+		const zoneName = viewerZoneName(lang);
+		const dated = new Intl.DateTimeFormat(lang, {
+			weekday: 'short',
+			day: 'numeric',
+			month: 'short',
+			hour: '2-digit',
+			minute: '2-digit',
+			hour12: false,
+		});
+
+		// Substring matching over a pre-normalised haystack. Plenty up to a few hundred
+		// profiles; swap in a prebuilt index (minisearch et al) only once that stops holding.
+		const apply = () => {
+			const tokens = normalise(input?.value ?? '')
+				.split(' ')
+				.filter(Boolean);
+			const game = gameFilter?.value ?? '';
+			const liveOnly = liveFilter?.checked ?? false;
+			let shown = 0;
+
+			for (const card of cards) {
+				const haystack = card.dataset.haystack ?? '';
+				const games = (card.dataset.games ?? '').split('|').filter(Boolean);
+
+				const visible =
+					tokens.every((tok) => haystack.includes(tok)) &&
+					(!game || games.includes(game)) &&
+					(!liveOnly || card.dataset.live === '1');
+
+				card.hidden = !visible;
+				if (visible) shown++;
+			}
+
+			// A live filter returning nothing is a different situation from a bad search,
+			// and needs saying so, or ticking it during a quiet hour looks broken.
+			const blankFromLive = shown === 0 && liveOnly;
+			if (noResults) noResults.hidden = shown > 0 || blankFromLive;
+			if (noneLive) noneLive.hidden = !blankFromLive;
+		};
+
+		// Recompute live state in the browser, not at build: a static page is a snapshot.
+		// Also re-derives "next up" so cards self-correct between rebuilds.
+		tick(() => {
+			const now = Date.now();
+
+			for (const card of cards) {
+				const windows = parseWindows(card.dataset.occ);
+				const live = liveWindow(windows, now);
+
+				card.dataset.live = live ? '1' : '0';
+				card.classList.toggle('card--live', Boolean(live));
+
+				const badge = card.querySelector<HTMLElement>('[data-live-badge]');
+				if (badge) badge.hidden = !live;
+
+				const wrap = card.querySelector<HTMLElement>('[data-next-wrap]');
+				const timeEl = card.querySelector<HTMLTimeElement>('[data-next-time]');
+				const next = nextWindow(windows, now);
+
+				if (wrap && timeEl) {
+					wrap.hidden = !next;
+					if (next) {
+						timeEl.dateTime = new Date(next.start).toISOString();
+						timeEl.dataset.start = String(next.start);
+						timeEl.textContent = `${dated.format(next.start)} ${zoneName}`;
+					}
+				}
+			}
+
+			apply();
+		});
+
+		input?.addEventListener('input', apply);
+		gameFilter?.addEventListener('change', apply);
+		liveFilter?.addEventListener('change', apply);
+	}
+</script>
+
+<style>
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
+	.controls {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		margin-bottom: 0.5rem;
+	}
+
+	.controls input[type='search'],
+	.controls select {
+		font: inherit;
+		font-size: 1rem; /* 16px stops iOS Safari zooming on focus */
+		color: var(--text);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.6rem 0.75rem;
+	}
+
+	.controls input[type='search'] {
+		flex: 1 1 12rem;
+		min-width: 0;
+	}
+
+	.controls input:focus-visible,
+	.controls select:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 1px;
+	}
+
+	.live-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.88rem;
+		color: var(--muted);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.55rem 0.75rem;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.live-toggle:has(input:checked) {
+		color: var(--ok);
+		border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+	}
+
+	.disclaimer {
+		font-size: 0.78rem;
+		color: var(--muted);
+		margin: 0 0 1rem;
+	}
+
+	.browse-games {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.4rem;
+		margin-bottom: 1.25rem;
+	}
+
+	.browse-label {
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--muted);
+		margin-right: 0.15rem;
+	}
+
+	.cards {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.card[hidden] {
+		display: none;
+	}
+
+	.card a {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.75rem;
+		text-decoration: none;
+		color: inherit;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.8rem 0.9rem;
+	}
+
+	.card a:hover {
+		border-color: var(--accent);
+	}
+
+	.card--live a {
+		border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+		background: color-mix(in srgb, var(--ok) 7%, var(--surface));
+	}
+
+	.card-body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+		min-width: 0;
+		flex: 1 1 auto;
+	}
+
+	.card-name {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 0.45rem;
+		font-weight: 600;
+		font-size: 1.05rem;
+	}
+
+	.card-next[hidden] {
+		display: none;
+	}
+
+	.card-next {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.4rem;
+		font-size: 0.9rem;
+	}
+
+	.card-next-label {
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--muted);
+	}
+
+	.card-next time {
+		font-variant-numeric: tabular-nums;
+	}
+
+	.card-meta {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.35rem;
+	}
+
+	.no-results {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 1rem;
+	}
+
+	.no-results[hidden] {
+		display: none;
+	}
+
+	.no-results .muted {
+		color: var(--muted);
+	}
+</style>

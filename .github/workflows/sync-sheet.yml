@@ -1,0 +1,59 @@
+name: Sync submissions
+
+# Cron has a 5 minute floor and drifts under load, so 15 minutes is the honest
+# promise. The site copy tells streamers "live in about 15 minutes" to match.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report what would change without writing'
+        type: boolean
+        default: false
+
+concurrency:
+  # Two runs writing YAML at once would race on the same files.
+  group: sync-sheet
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Pull submissions
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          SHEET_RANGE: ${{ vars.SHEET_RANGE }}
+        run: node scripts/sync-sheet.mjs ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      # Validates the incoming data against the Zod schema. A malformed submission
+      # fails here rather than publishing a broken page.
+      - name: Verify the site still builds
+        run: npm run build
+
+      - name: Commit changes
+        if: ${{ !inputs.dry_run }}
+        run: |
+          if [ -z "$(git status --porcelain src/data)" ]; then
+            echo "no changes"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/data
+          git commit -m "Sync streamer submissions"
+          git push

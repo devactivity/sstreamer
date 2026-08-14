@@ -1,0 +1,7 @@
+name: Valorant
+short: VAL
+accent: "#d13639"
+cover: ./covers/valorant.png
+aliases:
+  - valo
+  - valorant

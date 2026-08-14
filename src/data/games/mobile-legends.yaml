@@ -1,0 +1,10 @@
+name: "Mobile Legends: Bang Bang"
+short: MLBB
+accent: "#1e63d4"
+# Placeholder art. Drop real cover art at this path to replace it.
+cover: ./covers/mobile-legends.png
+aliases:
+  - mlbb
+  - mobile legend
+  - ml
+  - mole

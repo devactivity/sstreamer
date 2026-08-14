@@ -1,0 +1,7 @@
+name: Free Fire
+short: FF
+accent: "#e8590c"
+cover: ./covers/free-fire.png
+aliases:
+  - ff
+  - garena free fire

@@ -1,0 +1,292 @@
+---
+import { t, PLATFORM_LABEL, type Lang } from '../lib/i18n';
+import { DAYS, PLATFORMS } from '../lib/constants';
+import { getGameIndex, sortGames } from '../lib/games';
+import type { Streamer } from '../lib/schedule';
+
+interface Props {
+	lang: Lang;
+	entry: Streamer;
+}
+
+const { lang, entry } = Astro.props;
+const s = t(lang);
+const d = entry.data;
+const games = sortGames([...(await getGameIndex()).values()]);
+
+// Pre-fill from the first recurring block. Editing the full multi-block schedule
+// through a form would need a much bigger UI; the sheet keeps the raw data, and
+// anything this form can't express still goes through manual moderation.
+const first = d.schedule.recurring[0];
+const primaryChannel = d.channels.find((c) => c.primary) ?? d.channels[0];
+---
+
+<section class="edit" data-edit data-slug={entry.id}>
+	<details>
+		<summary>{s.editProfile}</summary>
+
+		<form data-edit-form>
+			<label class="field">
+				<span class="field-label">{s.editKeyLabel}</span>
+				<input
+					type="text"
+					name="edit_key"
+					autocomplete="off"
+					spellcheck="false"
+					placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+					data-key-input
+				/>
+				<span class="hint">{s.editKeyHint}</span>
+				<span class="hint hint--error" data-key-error hidden>{s.editKeyBad}</span>
+			</label>
+
+			<div class="grid">
+				<label class="field">
+					<span class="field-label">{s.claimPlatformLabel}</span>
+					<select name="platform">
+						{PLATFORMS.map((p) => (
+							<option value={p} selected={p === primaryChannel?.platform}>
+								{PLATFORM_LABEL[p] ?? p}
+							</option>
+						))}
+					</select>
+				</label>
+
+				<label class="field">
+					<span class="field-label">{s.claimHandleLabel}</span>
+					<input type="text" name="handle" autocomplete="off" value={primaryChannel?.handle ?? ''} />
+				</label>
+
+				<label class="field">
+					<span class="field-label">{s.claimGameLabel}</span>
+					<select name="game">
+						<option value="">-</option>
+						{games.map((g) => (
+							<option value={g.id} selected={g.id === (first?.game ?? d.games[0]?.id)}>
+								{g.data.name}
+							</option>
+						))}
+					</select>
+				</label>
+
+				<label class="field">
+					<span class="field-label">{s.claimTimeLabel}</span>
+					<input type="time" name="start" value={first?.start ?? '20:00'} />
+				</label>
+			</div>
+
+			<fieldset class="days">
+				<legend class="field-label">{s.claimDaysLabel}</legend>
+				{DAYS.map((day, i) => (
+					<label class="day-toggle">
+						<input type="checkbox" name="days" value={day} checked={first?.days.includes(day)} />
+						<span>{s.dayShort[i]}</span>
+					</label>
+				))}
+			</fieldset>
+
+			<div class="actions">
+				<button type="submit">{s.editSubmit}</button>
+			</div>
+
+			<p class="hint">{s.editLostKey}</p>
+		</form>
+
+		<p
+			class="pending"
+			data-edit-pending
+			hidden
+			data-msg-preview={s.claimPending}
+			data-msg-sent={s.sentEdit}
+			data-msg-failed={s.sendFailed}
+		>
+		</p>
+	</details>
+</section>
+
+<script>
+	import { hashEditKey, isWellFormedEditKey } from '../lib/edit-key';
+	import { SubmitNotConfiguredError, submitToForm } from '../lib/submit';
+
+	const root = document.querySelector<HTMLElement>('[data-edit]');
+	const form = root?.querySelector<HTMLFormElement>('[data-edit-form]');
+
+	if (root && form) {
+		const keyInput = form.querySelector<HTMLInputElement>('[data-key-input]');
+		const keyError = form.querySelector<HTMLElement>('[data-key-error]');
+		const pending = root.querySelector<HTMLElement>('[data-edit-pending]');
+
+		form.addEventListener('submit', async (event) => {
+			event.preventDefault();
+			const raw = keyInput?.value.trim() ?? '';
+
+			// Format check only. Whether the key is *correct* is decided by the sync
+			// Action against the stored hash - a browser check would be bypassable, so
+			// a wrong key here simply routes the submission to manual review instead.
+			if (raw && !isWellFormedEditKey(raw)) {
+				if (keyError) keyError.hidden = false;
+				keyInput?.focus();
+				return;
+			}
+			if (keyError) keyError.hidden = true;
+
+			const keyHash = raw ? await hashEditKey(raw) : '';
+			const data = new FormData(form);
+			const value = (key: string) => String(data.get(key) ?? '');
+			const days = [...form.querySelectorAll<HTMLInputElement>('input[name="days"]:checked')]
+				.map((el) => el.value)
+				.join('|');
+
+			let outcome: 'sent' | 'preview' | 'failed';
+			try {
+				await submitToForm({
+					slug: root.dataset.slug,
+					edit_key_hash: keyHash,
+					platform: value('platform'),
+					handle: value('handle'),
+					game: value('game'),
+					games: value('game'),
+					start: value('start'),
+					days,
+				});
+				outcome = 'sent';
+			} catch (err) {
+				outcome = err instanceof SubmitNotConfiguredError ? 'preview' : 'failed';
+			}
+
+			if (pending) {
+				pending.textContent =
+					outcome === 'sent'
+						? (pending.dataset.msgSent ?? '')
+						: outcome === 'preview'
+							? (pending.dataset.msgPreview ?? '')
+							: (pending.dataset.msgFailed ?? '');
+				pending.hidden = false;
+			}
+			if (outcome !== 'failed') form.hidden = true;
+		});
+	}
+</script>
+
+<style>
+	.edit {
+		margin-top: 2rem;
+	}
+
+	details {
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.7rem 0.9rem;
+	}
+
+	summary {
+		cursor: pointer;
+		font-weight: 600;
+		font-size: 0.92rem;
+	}
+
+	summary:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
+
+	form {
+		margin-top: 0.9rem;
+	}
+
+	form[hidden] {
+		display: none;
+	}
+
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.field-label {
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: var(--muted);
+	}
+
+	.hint {
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+
+	.hint--error {
+		color: var(--danger);
+	}
+
+	.hint[hidden] {
+		display: none;
+	}
+
+	input[type='text'],
+	input[type='time'],
+	select {
+		font: inherit;
+		font-size: 1rem; /* 16px stops iOS Safari zooming on focus */
+		color: var(--text);
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.6rem 0.7rem;
+		width: 100%;
+	}
+
+	.grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+		gap: 0.7rem;
+		margin: 0.9rem 0;
+	}
+
+	.days {
+		border: 0;
+		padding: 0;
+		margin: 0 0 1rem;
+	}
+
+	.days legend {
+		padding: 0;
+		margin-bottom: 0.4rem;
+	}
+
+	.day-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		margin-right: 0.6rem;
+		font-size: 0.9rem;
+	}
+
+	.actions {
+		display: flex;
+		gap: 0.5rem;
+		margin-bottom: 0.6rem;
+	}
+
+	button {
+		font: inherit;
+		font-weight: 600;
+		cursor: pointer;
+		background: var(--accent);
+		color: var(--accent-fg);
+		border: 1px solid transparent;
+		border-radius: var(--radius);
+		padding: 0.6rem 1.1rem;
+	}
+
+	.pending {
+		margin: 0.6rem 0 0;
+		font-size: 0.88rem;
+		color: var(--muted);
+	}
+
+	.pending[hidden] {
+		display: none;
+	}
+</style>

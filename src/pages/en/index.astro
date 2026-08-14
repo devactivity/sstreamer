@@ -1,0 +1,14 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+import Directory from '../../components/Directory.astro';
+import { t } from '../../lib/i18n';
+
+const lang = 'en' as const;
+const s = t(lang);
+const entries = await getCollection('streamers');
+---
+
+<Base lang={lang} title={`${s.siteName} - ${s.tagline}`} description={s.tagline} path="/">
+	<Directory lang={lang} entries={entries} />
+</Base>

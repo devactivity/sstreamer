@@ -1,0 +1,7 @@
+name: Honor of Kings
+short: HoK
+accent: "#b8860b"
+cover: ./covers/hok.png
+aliases:
+  - hok
+  - honour of kings

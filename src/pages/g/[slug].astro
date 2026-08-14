@@ -1,0 +1,25 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../../layouts/Base.astro';
+import GameProfile from '../../components/GameProfile.astro';
+import { t } from '../../lib/i18n';
+
+export async function getStaticPaths() {
+	const games = await getCollection('games');
+	const entries = await getCollection('streamers');
+	return games.map((game) => ({ params: { slug: game.id }, props: { game, entries } }));
+}
+
+const lang = 'id' as const;
+const s = t(lang);
+const { game, entries } = Astro.props;
+---
+
+<Base
+	lang={lang}
+	title={`${game.data.name} - ${s.siteName}`}
+	description={s.gameDesc(game.data.name)}
+	path={`/g/${game.id}`}
+>
+	<GameProfile lang={lang} game={game} entries={entries} />
+</Base>

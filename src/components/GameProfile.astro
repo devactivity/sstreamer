@@ -1,0 +1,226 @@
+---
+import { Image } from 'astro:assets';
+import ScheduleList from './ScheduleList.astro';
+import Avatar from './Avatar.astro';
+import { upcomingOccurrences, type Streamer, type DisplayOccurrence } from '../lib/schedule';
+import type { Game } from '../lib/games';
+import { t, localePath, type Lang } from '../lib/i18n';
+
+interface Props {
+	lang: Lang;
+	game: Game;
+	entries: Streamer[];
+}
+
+const { lang, game, entries } = Astro.props;
+const s = t(lang);
+const { name, short, accent, cover } = game.data;
+
+const playing = entries
+	.filter((e) => e.data.games.some((ref) => ref.id === game.id))
+	.sort((a, b) => a.data.name.localeCompare(b.data.name));
+
+/**
+ * Per-block `game` is optional in the schema, so an untagged block belongs to this
+ * game by virtue of the streamer listing it. Without that fallback, a streamer who
+ * lists MLBB but tags no blocks would vanish from this page entirely.
+ */
+const occurrences: DisplayOccurrence[] = playing
+	.flatMap((e) =>
+		upcomingOccurrences(e.data, { days: 14 })
+			.filter((o) => o.game === game.id || o.game === undefined)
+			.map((o) => ({
+				...o,
+				timezone: e.data.timezone,
+				streamer: { name: e.data.name, slug: e.id },
+			})),
+	)
+	.sort((a, b) => a.startUtc - b.startUtc);
+
+/** Live windows per streamer, so each roster entry can badge itself. */
+function windowsFor(entry: Streamer): string {
+	return upcomingOccurrences(entry.data, { days: 14 })
+		.filter((o) => o.status !== 'cancelled')
+		.slice(0, 3)
+		.map((o) => `${o.startUtc},${o.endUtc}`)
+		.join('|');
+}
+---
+
+<nav class="crumb">
+	<a href={localePath(lang, '/')}>&lt;- {s.backToDirectory}</a>
+</nav>
+
+<header class="game-head">
+	{
+		cover ? (
+			<Image src={cover} alt="" width={320} class="game-cover" loading="eager" />
+		) : (
+			<span class="game-cover game-cover--fallback" style={`--accent:${accent}`} aria-hidden="true">
+				{short}
+			</span>
+		)
+	}
+	<div class="game-head-text">
+		<h1>{name}</h1>
+		<p class="game-count">{s.streamerCount(playing.length)}</p>
+	</div>
+</header>
+
+{
+	playing.length === 0 ? (
+		<p class="empty">{s.noStreamersForGame}</p>
+	) : (
+		<>
+			<section class="roster">
+				<h2>{s.playedBy}</h2>
+				<ul>
+					{playing.map((e) => (
+						<li>
+							<a
+								href={localePath(lang, `/s/${e.id}`)}
+								data-live-root
+								data-occ={windowsFor(e)}
+							>
+								<Avatar name={e.data.name} src={e.data.avatar} size={32} />
+								<span class="roster-name">{e.data.name}</span>
+								<span class="badge badge--live" data-live-badge hidden title={s.liveNowTitle}>
+									{s.liveNow}
+								</span>
+							</a>
+						</li>
+					))}
+				</ul>
+			</section>
+
+			<section class="schedule-section">
+				<h2>{s.gameSchedule}</h2>
+				<p class="disclaimer">{s.liveDisclaimer}</p>
+				<ScheduleList lang={lang} occurrences={occurrences} timezone="Asia/Jakarta" />
+			</section>
+		</>
+	)
+}
+
+<style>
+	.crumb {
+		font-size: 0.85rem;
+		margin: 0.5rem 0 0;
+	}
+
+	.crumb a {
+		text-decoration: none;
+		color: var(--muted);
+	}
+
+	.crumb a:hover {
+		color: var(--accent);
+	}
+
+	.game-head {
+		display: flex;
+		align-items: center;
+		gap: 0.9rem;
+		margin: 0.6rem 0 1.5rem;
+	}
+
+	.game-cover {
+		flex: 0 0 auto;
+		width: 6rem;
+		height: 3.4rem;
+		border-radius: 8px;
+		object-fit: cover;
+		background: var(--surface);
+		border: 1px solid var(--border);
+	}
+
+	.game-cover--fallback {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		background: var(--accent);
+		border-color: transparent;
+		color: #fff;
+		font-weight: 700;
+		font-size: 0.95rem;
+		text-align: center;
+		padding: 0.2rem;
+		user-select: none;
+	}
+
+	.game-head-text {
+		min-width: 0;
+	}
+
+	.game-head h1 {
+		margin: 0 0 0.1rem;
+	}
+
+	.game-count {
+		margin: 0;
+		color: var(--muted);
+		font-size: 0.88rem;
+	}
+
+	h2 {
+		font-size: 0.8rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--muted);
+		margin: 0 0 0.6rem;
+	}
+
+	.roster {
+		margin-bottom: 1.75rem;
+	}
+
+	.roster ul {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
+	.roster a {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		text-decoration: none;
+		color: inherit;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		padding: 0.3rem 0.75rem 0.3rem 0.3rem;
+		font-size: 0.9rem;
+	}
+
+	.roster a:hover {
+		border-color: var(--accent);
+	}
+
+	.roster a.is-live {
+		border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+		background: color-mix(in srgb, var(--ok) 8%, var(--surface));
+	}
+
+	.roster-name {
+		font-weight: 600;
+	}
+
+	.disclaimer {
+		font-size: 0.78rem;
+		color: var(--muted);
+		margin: 0 0 0.9rem;
+	}
+
+	.empty {
+		color: var(--muted);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 1rem;
+		margin: 0;
+	}
+</style>

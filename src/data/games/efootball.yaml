@@ -1,0 +1,7 @@
+name: eFootball
+short: eFB
+accent: "#0b6b3a"
+cover: ./covers/eFootball.png
+aliases:
+  - pes
+  - efootball

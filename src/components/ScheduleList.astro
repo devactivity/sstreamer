@@ -1,0 +1,367 @@
+---
+import type { DisplayOccurrence, Occurrence } from '../lib/schedule';
+import { zonedDate, addDays } from '../lib/schedule';
+import { getGameIndex } from '../lib/games';
+import { t, locale, localePath, ZONE_LABEL, PLATFORM_LABEL, type Lang } from '../lib/i18n';
+
+interface Props {
+	lang: Lang;
+	occurrences: DisplayOccurrence[];
+	/** Default zone for the no-JS fallback. Each occurrence may override it. */
+	timezone: string;
+}
+
+const { lang, occurrences, timezone } = Astro.props;
+const s = t(lang);
+const loc = locale(lang);
+const gameIndex = await getGameIndex();
+
+const now = Date.now();
+const todayStr = zonedDate(now, timezone);
+const tomorrowStr = addDays(todayStr, 1);
+
+// Group by the streamer's local calendar date. The client re-labels each heading
+// from the first occurrence's instant, which covers viewers in other zones.
+const groups = new Map<string, DisplayOccurrence[]>();
+for (const o of occurrences) {
+	const list = groups.get(o.date) ?? [];
+	list.push(o);
+	groups.set(o.date, list);
+}
+
+// One formatter per zone: a game page can mix WIB, WITA and WIT in a single list.
+const formatters = new Map<string, Intl.DateTimeFormat>();
+function fmtFor(tz: string): Intl.DateTimeFormat {
+	let f = formatters.get(tz);
+	if (!f) {
+		f = new Intl.DateTimeFormat(loc, {
+			timeZone: tz,
+			hour: '2-digit',
+			minute: '2-digit',
+			hour12: false,
+		});
+		formatters.set(tz, f);
+	}
+	return f;
+}
+
+/** "20.00-23.00 WIB" in the occurrence's own zone, for the no-JS fallback. */
+function localRange(o: DisplayOccurrence): string {
+	const tz = o.timezone ?? timezone;
+	const f = fmtFor(tz);
+	return `${f.format(o.startUtc)}-${f.format(o.endUtc)} ${ZONE_LABEL[tz] ?? tz}`;
+}
+
+function dayHeading(date: string): string {
+	if (date === todayStr) return s.today;
+	if (date === tomorrowStr) return s.tomorrow;
+	const [y, m, d] = date.split('-').map(Number);
+	return new Intl.DateTimeFormat(loc, {
+		timeZone: 'UTC',
+		weekday: 'long',
+		day: 'numeric',
+		month: 'short',
+	}).format(Date.UTC(y, m - 1, d));
+}
+
+const statusLabel: Record<Occurrence['status'], string | null> = {
+	scheduled: null,
+	cancelled: s.cancelled,
+	moved: s.moved,
+	extra: s.extra,
+};
+
+// With one zone the blanket note is useful. With several it would be wrong, and every
+// row is already self-labelled, so leave it to the client to fill in the viewer's zone.
+const zones = new Set(occurrences.map((o) => o.timezone ?? timezone));
+const singleZone = zones.size <= 1 ? (zones.values().next().value ?? timezone) : null;
+---
+
+{
+	occurrences.length === 0 ? (
+		<p class="empty">{s.nothingUpcoming}</p>
+	) : (
+		<div
+			class="schedule"
+			data-schedule
+			data-today={s.today}
+			data-tomorrow={s.tomorrow}
+			data-tz-note={s.tzNote('{zone}')}
+			data-alt-template={s.streamerTime('{time}')}
+		>
+			<p class="tz-note" data-tz-target>
+				{singleZone ? s.tzNoteFallback(ZONE_LABEL[singleZone] ?? singleZone) : ''}
+			</p>
+
+			{[...groups.entries()].map(([date, items]) => (
+				<section class="day" data-day-start={items[0].startUtc}>
+					<h3 class="day-heading" data-day-heading>
+						{dayHeading(date)}
+					</h3>
+					<ul class="occ-list">
+						{items.map((o) => (
+							<li
+								class:list={['occ', o.status !== 'scheduled' && `occ--${o.status}`]}
+								data-occ-row
+								data-start={o.startUtc}
+								data-end={o.endUtc}
+								data-cancelled={o.status === 'cancelled' ? '' : undefined}
+							>
+								<time
+									class="occ-time"
+									datetime={new Date(o.startUtc).toISOString()}
+									data-start={o.startUtc}
+									data-end={o.endUtc}
+									data-streamer-time={localRange(o)}
+									data-streamer-tz={o.timezone ?? timezone}
+									title={s.streamerTime(localRange(o))}
+								>
+									{localRange(o)}
+								</time>
+
+								<div class="occ-body">
+									{o.title && <span class="occ-title">{o.title}</span>}
+									<span class="occ-meta">
+										{o.streamer && (
+											<a class="occ-streamer" href={localePath(lang, `/s/${o.streamer.slug}`)}>
+												{o.streamer.name}
+											</a>
+										)}
+										{o.game && (
+											<span class="occ-game">{gameIndex.get(o.game)?.data.name ?? o.game}</span>
+										)}
+										{o.platform && (
+											<span class="occ-platform">{PLATFORM_LABEL[o.platform] ?? o.platform}</span>
+										)}
+										{statusLabel[o.status] && (
+											<span class:list={['badge', `badge--${o.status}`]}>
+												{statusLabel[o.status]}
+											</span>
+										)}
+									</span>
+									{o.note && <span class="occ-note">{o.note}</span>}
+								</div>
+							</li>
+						))}
+					</ul>
+				</section>
+			))}
+		</div>
+	)
+}
+
+<script>
+	import { docLang, liveWindow, tick, viewerZoneName } from '../lib/live-client';
+
+	// Individual times are rewritten by the global script in Base.astro. This handles
+	// what's specific to a grouped schedule: day headings, the zone note, the
+	// streamer's-own-time hint, and marking whichever row is running right now.
+	const root = document.querySelector<HTMLElement>('[data-schedule]');
+	if (root) {
+		const lang = docLang();
+		const viewerTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+		const zoneName = viewerZoneName(lang) || viewerTz;
+
+		const dayFmt = new Intl.DateTimeFormat(lang, {
+			weekday: 'long',
+			day: 'numeric',
+			month: 'short',
+		});
+
+		// Re-label day headings against the viewer's own calendar.
+		const startOfDay = (ts: number) => {
+			const d = new Date(ts);
+			d.setHours(0, 0, 0, 0);
+			return d.getTime();
+		};
+		const today = startOfDay(Date.now());
+		const dayMs = 86_400_000;
+
+		for (const day of root.querySelectorAll<HTMLElement>('.day')) {
+			const heading = day.querySelector<HTMLElement>('[data-day-heading]');
+			const start = Number(day.dataset.dayStart);
+			if (!heading || !Number.isFinite(start)) continue;
+
+			const diff = Math.round((startOfDay(start) - today) / dayMs);
+			heading.textContent =
+				diff === 0
+					? (root.dataset.today ?? heading.textContent)
+					: diff === 1
+						? (root.dataset.tomorrow ?? heading.textContent)
+						: dayFmt.format(start);
+		}
+
+		const note = root.querySelector<HTMLElement>('[data-tz-target]');
+		if (note && root.dataset.tzNote) {
+			note.textContent = root.dataset.tzNote.replace('{zone}', zoneName);
+		}
+
+		// Show the streamer's own local time only when it differs from the viewer's.
+		// Identical zones are the common Indonesian case, and repeating the same time
+		// twice would be noise.
+		const altTemplate = root.dataset.altTemplate;
+		if (altTemplate) {
+			for (const el of root.querySelectorAll<HTMLElement>('[data-streamer-time]')) {
+				if (el.dataset.streamerTz === viewerTz) continue;
+				const hint = document.createElement('span');
+				hint.className = 'occ-alt-time';
+				hint.textContent = altTemplate.replace('{time}', el.dataset.streamerTime ?? '');
+				el.closest('.occ')?.querySelector('.occ-body')?.appendChild(hint);
+			}
+		}
+
+		// Mark whichever row is running now. Cancelled rows are skipped: a cancelled
+		// stream is the one thing we know is not on.
+		const rows = [...root.querySelectorAll<HTMLElement>('[data-occ-row]')].filter(
+			(r) => r.dataset.cancelled === undefined,
+		);
+		tick(() => {
+			const now = Date.now();
+			for (const row of rows) {
+				const windows = [{ start: Number(row.dataset.start), end: Number(row.dataset.end) }];
+				row.classList.toggle('occ--live', Boolean(liveWindow(windows, now)));
+			}
+		});
+	}
+</script>
+
+<style>
+	.tz-note {
+		font-size: 0.8rem;
+		color: var(--muted);
+		margin: 0 0 1rem;
+	}
+
+	.tz-note:empty {
+		display: none;
+	}
+
+	.empty {
+		color: var(--muted);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 1rem;
+		margin: 0;
+	}
+
+	.day + .day {
+		margin-top: 1.25rem;
+	}
+
+	.day-heading {
+		font-size: 0.8rem;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--muted);
+		margin: 0 0 0.5rem;
+	}
+
+	.occ-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.occ {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.15rem 0.9rem;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-left: 3px solid var(--accent);
+		border-radius: var(--radius);
+		padding: 0.65rem 0.8rem;
+	}
+
+	.occ--cancelled {
+		border-left-color: var(--danger);
+		opacity: 0.7;
+	}
+
+	.occ--cancelled .occ-time,
+	.occ--cancelled .occ-title {
+		text-decoration: line-through;
+	}
+
+	.occ--moved {
+		border-left-color: var(--warn);
+	}
+
+	.occ--live {
+		border-left-color: var(--ok);
+		background: color-mix(in srgb, var(--ok) 8%, var(--surface));
+	}
+
+	.occ-time {
+		font-variant-numeric: tabular-nums;
+		font-weight: 600;
+		font-size: 0.95rem;
+		flex: 0 0 auto;
+	}
+
+	.occ-body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		min-width: 0;
+		flex: 1 1 12rem;
+	}
+
+	.occ-title {
+		font-size: 0.95rem;
+	}
+
+	.occ-meta {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.8rem;
+		color: var(--muted);
+	}
+
+	.occ-streamer {
+		font-weight: 600;
+		color: var(--text);
+		text-decoration: none;
+	}
+
+	.occ-streamer:hover {
+		color: var(--accent);
+	}
+
+	.occ-game::after {
+		content: '-';
+		margin-left: 0.4rem;
+	}
+
+	.occ-note {
+		font-size: 0.8rem;
+		color: var(--muted);
+		font-style: italic;
+	}
+
+	.occ-alt-time {
+		font-size: 0.78rem;
+		color: var(--muted);
+	}
+
+	.badge--cancelled {
+		color: var(--danger);
+		border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+	}
+
+	.badge--moved {
+		color: var(--warn);
+		border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+	}
+
+	.badge--extra {
+		color: var(--ok);
+		border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+	}
+</style>

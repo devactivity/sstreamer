@@ -1,0 +1,24 @@
+---
+import { getCollection } from 'astro:content';
+import Base from '../../../layouts/Base.astro';
+import StreamerProfile from '../../../components/StreamerProfile.astro';
+import { t } from '../../../lib/i18n';
+
+export async function getStaticPaths() {
+	const entries = await getCollection('streamers');
+	return entries.map((entry) => ({ params: { slug: entry.id }, props: { entry } }));
+}
+
+const lang = 'en' as const;
+const s = t(lang);
+const { entry } = Astro.props;
+---
+
+<Base
+	lang={lang}
+	title={`${entry.data.name} - ${s.siteName}`}
+	description={entry.data.bio ?? s.profileDesc(entry.data.name)}
+	path={`/s/${entry.id}`}
+>
+	<StreamerProfile lang={lang} entry={entry} />
+</Base>

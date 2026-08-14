@@ -1,0 +1,75 @@
+---
+import { Image } from 'astro:assets';
+
+interface Props {
+	name: string;
+	src?: ImageMetadata;
+	size?: number;
+}
+
+const { name, src, size = 44 } = Astro.props;
+
+const initials =
+	name
+		.split(/\s+/)
+		.filter(Boolean)
+		.slice(0, 2)
+		.map((w) => w[0])
+		.join('')
+		.toUpperCase() || '?';
+
+// Stable hue from the name, so a streamer without a picture still gets a
+// consistent, distinguishable tile rather than a row of identical grey circles.
+let hash = 0;
+for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+const hue = hash % 360;
+---
+
+{
+	src ? (
+		<Image
+			src={src}
+			alt={name}
+			width={size * 2}
+			class="avatar"
+			style={`--size:${size}px`}
+			loading="lazy"
+			decoding="async"
+		/>
+	) : (
+		<span
+			class="avatar avatar--fallback"
+			style={`--size:${size}px; --hue:${hue}`}
+			aria-hidden="true"
+		>
+			{initials}
+		</span>
+	)
+}
+
+<style>
+	.avatar {
+		width: var(--size);
+		height: var(--size);
+		flex: 0 0 auto;
+		border-radius: 50%;
+		object-fit: cover;
+		background: var(--surface);
+		border: 1px solid var(--border);
+	}
+
+	/* Lightness/saturation come from theme tokens in Base.astro so the manual theme
+	   toggle reaches these too - a local media query here would ignore it. */
+	.avatar--fallback {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		font-size: calc(var(--size) * 0.36);
+		font-weight: 700;
+		letter-spacing: 0.02em;
+		color: hsl(var(--hue) var(--tile-s-fg) var(--tile-l-fg));
+		background: hsl(var(--hue) var(--tile-s-bg) var(--tile-l-bg));
+		border-color: hsl(var(--hue) var(--tile-s-br) var(--tile-l-br));
+		user-select: none;
+	}
+</style>

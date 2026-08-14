@@ -1,0 +1,29 @@
+{
+  "name": "streamer-scheduler",
+  "type": "module",
+  "version": "0.0.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "test": "node --test 'test/**/*.test.ts'",
+    "check": "astro check",
+    "export": "node scripts/export-csv.mjs",
+    "import": "node scripts/import-csv.mjs",
+    "sync": "node --env-file-if-exists=.env scripts/sync-sheet.mjs"
+  },
+  "dependencies": {
+    "astro": "^7.2.1"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^26.2.0",
+    "js-yaml": "^5.2.3",
+    "typescript": "^6.0.3"
+  }
+}
