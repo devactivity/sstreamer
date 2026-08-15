@@ -10,6 +10,11 @@ on:
   # Called by sync-sheet.yml, because a push made with GITHUB_TOKEN does not
   # trigger other workflows and the synced content would otherwise never deploy.
   workflow_call:
+    inputs:
+      ref:
+        description: 'Commit to deploy. The caller must pass the commit it just pushed.'
+        type: string
+        required: false
 
 concurrency:
   group: deploy
@@ -23,7 +28,12 @@ jobs:
       deployments: write
 
     steps:
+      # `github.sha` is the head from when the run started, so when sync-sheet.yml
+      # calls this after committing, the default checkout predates its own commit
+      # and would rebuild the site without the new content.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -42,10 +52,21 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Record the commit being deployed
+        id: rev
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=sstreamer
+          # --branch is what makes this a production deploy. Checking out a raw SHA
+          # leaves a detached HEAD, so wrangler cannot read the branch from git and
+          # would publish a preview that never reaches sstreamer.pages.dev.
+          command: >-
+            pages deploy dist --project-name=sstreamer
+            --branch=main
+            --commit-hash=${{ steps.rev.outputs.sha }}
+            --commit-dirty=true
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
