@@ -5,9 +5,16 @@ import { getGameIndex, sortGames } from '../lib/games';
 
 interface Props {
 	lang: Lang;
+	/**
+	 * Every published slug, so a duplicate can be caught before the streamer is
+	 * handed an edit key that unlocks nothing. This is a courtesy, not a control:
+	 * the page is static and anyone can POST straight to the form endpoint, so the
+	 * Action's `decideSubmission` stays the only check that actually holds.
+	 */
+	taken?: { slug: string; name: string; href: string }[];
 }
 
-const { lang } = Astro.props;
+const { lang, taken = [] } = Astro.props;
 const s = t(lang);
 
 // A dropdown rather than free text, so submissions land on canonical slugs and
@@ -19,11 +26,14 @@ const games = sortGames([...(await getGameIndex()).values()]);
   One field to start, per the agreed flow. Step 2 is revealed client-side the moment
   step 1 is submitted - no rebuild wait, no return visit - because asking people to
   come back later to finish is where profiles go to die.
-
-  TODO: POST both steps to the Google Forms endpoint once the sheet exists. Until then
-  the final submit says plainly that nothing is stored, rather than faking success.
 */}
-<section class="claim" data-claim data-step2-template={s.claimStep2('{name}')}>
+<section
+	class="claim"
+	data-claim
+	data-step2-template={s.claimStep2('{name}')}
+	data-taken-template={s.claimTakenTitle('{name}')}
+	data-taken={JSON.stringify(taken)}
+>
 	<h2>{s.claimCta}</h2>
 	<p class="claim-body">{s.claimCtaBody}</p>
 
@@ -34,6 +44,21 @@ const games = sortGames([...(await getGameIndex()).values()]);
 		</label>
 		<button type="submit">{s.claimSubmit}</button>
 	</form>
+
+	{/*
+	  Shown instead of creating anything when the typed name slugifies onto a profile
+	  that already exists. Not a hard block: two people can genuinely share a name, and
+	  refusing outright would lock the second one out with no way forward.
+	*/}
+	<div class="taken-panel" data-taken-panel hidden>
+		<p class="taken-title" data-taken-title></p>
+		<p class="taken-body">{s.claimTakenBody}</p>
+		<div class="actions">
+			<a class="taken-open" data-taken-open href="#">{s.claimTakenOpen}</a>
+			<button type="button" class="secondary" data-taken-continue>{s.claimTakenContinue}</button>
+		</div>
+		<p class="taken-hint">{s.claimTakenContinueHint}</p>
+	</div>
 
 	{/*
 	  Issued the moment the profile is created, shown once, never sent anywhere.
@@ -127,13 +152,30 @@ const games = sortGames([...(await getGameIndex()).values()]);
 		const keyPanel = root.querySelector<HTMLElement>('[data-key-panel]');
 		const keyValue = root.querySelector<HTMLElement>('[data-key-value]');
 		const copyBtn = root.querySelector<HTMLButtonElement>('[data-key-copy]');
+		const takenPanel = root.querySelector<HTMLElement>('[data-taken-panel]');
+		const takenTitle = root.querySelector<HTMLElement>('[data-taken-title]');
+		const takenOpen = root.querySelector<HTMLAnchorElement>('[data-taken-open]');
 		const step2Template = root.dataset.step2Template ?? '{name}';
+		const takenTemplate = root.dataset.takenTemplate ?? '{name}';
+
+		/** Published slugs, keyed for an exact lookup against whatever gets typed. */
+		const taken = new Map<string, { name: string; href: string }>();
+		try {
+			for (const row of JSON.parse(root.dataset.taken || '[]')) {
+				taken.set(row.slug, { name: row.name, href: row.href });
+			}
+		} catch {
+			// Malformed payload: fall through with an empty map rather than breaking the
+			// form. The Action still refuses to overwrite an existing profile.
+		}
 
 		/** Hash of the key issued this session, to accompany the submission. */
 		let keyHash = '';
 		let claimedName = '';
 		/** True once a send failed only because the form isn't wired up yet. */
 		let previewOnly = false;
+		/** Set by "not me", so the next submit goes through despite the collision. */
+		let allowDuplicate = false;
 
 		const finish = (outcome: 'sent' | 'preview' | 'failed') => {
 			if (!pending) return;
@@ -169,10 +211,26 @@ const games = sortGames([...(await getGameIndex()).values()]);
 				.map((el) => el.value)
 				.join('|');
 
+		const hideTaken = () => {
+			if (takenPanel) takenPanel.hidden = true;
+		};
+
 		step1?.addEventListener('submit', async (event) => {
 			event.preventDefault();
 			const name = nameInput?.value.trim();
 			if (!name) return;
+
+			// Checked before a key is generated, so somebody who is really trying to get
+			// back into an existing profile is not handed a key that unlocks nothing.
+			const clash = taken.get(slugify(name));
+			if (clash && !allowDuplicate) {
+				if (takenTitle) takenTitle.textContent = takenTemplate.replace('{name}', clash.name);
+				if (takenOpen) takenOpen.href = clash.href;
+				if (takenPanel) takenPanel.hidden = false;
+				return;
+			}
+			hideTaken();
+
 			claimedName = name;
 
 			// Generated here and displayed once. The raw key never leaves this page:
@@ -193,6 +251,19 @@ const games = sortGames([...(await getGameIndex()).values()]);
 			if (title) title.textContent = step2Template.replace('{name}', name);
 			step1.hidden = true;
 			if (step2) step2.hidden = false;
+		});
+
+		// Typing a different name makes the warning stale, and re-arms the check so the
+		// override cannot leak onto a name the streamer has not been warned about.
+		nameInput?.addEventListener('input', () => {
+			allowDuplicate = false;
+			hideTaken();
+		});
+
+		root.querySelector('[data-taken-continue]')?.addEventListener('click', () => {
+			allowDuplicate = true;
+			hideTaken();
+			step1?.requestSubmit();
 		});
 
 		copyBtn?.addEventListener('click', async () => {
@@ -319,6 +390,47 @@ const games = sortGames([...(await getGameIndex()).values()]);
 	[data-step1] .field {
 		flex: 1 1 14rem;
 		min-width: 0;
+	}
+
+	.taken-panel {
+		background: color-mix(in srgb, var(--warn) 10%, transparent);
+		border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+		border-radius: var(--radius);
+		padding: 0.8rem 0.9rem;
+		margin-top: 0.9rem;
+	}
+
+	.taken-panel[hidden] {
+		display: none;
+	}
+
+	.taken-title {
+		margin: 0 0 0.35rem;
+		font-weight: 700;
+	}
+
+	.taken-body {
+		margin: 0 0 0.8rem;
+		font-size: 0.88rem;
+		color: var(--muted);
+	}
+
+	/* An anchor, not a button, so it opens in a new tab on middle click and keeps a
+	   real href for anyone without JavaScript inspecting the page. */
+	.taken-open {
+		font-weight: 600;
+		text-decoration: none;
+		background: var(--accent);
+		color: var(--accent-fg);
+		border: 1px solid transparent;
+		border-radius: var(--radius);
+		padding: 0.6rem 1.1rem;
+	}
+
+	.taken-hint {
+		margin: 0.7rem 0 0;
+		font-size: 0.82rem;
+		color: var(--muted);
 	}
 
 	.key-panel {

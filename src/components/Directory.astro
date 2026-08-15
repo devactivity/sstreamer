@@ -182,7 +182,14 @@ const filterGames = sortGames([...usedGameIds].map((id) => gameIndex.get(id)!).f
 
 <p class="no-results" data-none-live hidden>{s.noneLive}</p>
 
-<ClaimForm lang={lang} />
+<ClaimForm
+	lang={lang}
+	taken={entries.map((entry) => ({
+		slug: entry.id,
+		name: entry.data.name,
+		href: localePath(lang, `/s/${entry.id}`),
+	}))}
+/>
 
 <script>
 	import { normalise } from '../lib/text';
