@@ -25,6 +25,10 @@ export function isApproved(value) {
 // A mismatch would silently create duplicate profiles instead of updating them.
 export { slugify } from '../../src/lib/text.ts';
 
+// Same reason: the browser encodes extra schedule blocks, this decodes them, and a
+// divergent format would drop schedules without any error to notice.
+import { DEFAULT_DURATION, decodeBlocks } from '../../src/lib/schedule-encode.ts';
+
 const splitList = (value) =>
 	String(value ?? '')
 		.split(/[|,]/)
@@ -50,9 +54,6 @@ export function submissionToPatch(row) {
 	const keyHash = row.edit_key_hash?.trim().toLowerCase();
 	if (keyHash && /^[0-9a-f]{64}$/.test(keyHash)) patch.edit_key_hash = keyHash;
 
-	const games = splitList(row.games);
-	if (games.length > 0) patch.games = games;
-
 	const aliases = splitList(row.aliases);
 	if (aliases.length > 0) patch.aliases = aliases;
 
@@ -62,25 +63,49 @@ export function submissionToPatch(row) {
 		];
 	}
 
+	const recurring = [];
+	const platform = row.platform?.trim();
+
+	// The first block has its own columns, kept as-is so no existing form question or
+	// entry id has to change. Everything after it arrives packed in one column.
 	const days = splitList(row.days);
 	if (days.length > 0 && row.start?.trim()) {
 		const duration = Number(row.duration_min);
 		// Built in one literal rather than assigned piecemeal, so the inferred shape
 		// is complete - otherwise later property adds are invisible to the checker.
-		patch.schedule = {
-			recurring: [
-				{
-					days,
-					start: row.start.trim(),
-					duration_min: Number.isFinite(duration) && duration > 0 ? duration : 120,
-					...(row.title?.trim() ? { title: row.title.trim() } : {}),
-					...(row.game?.trim() ? { game: row.game.trim() } : {}),
-					...(row.platform?.trim() ? { platform: row.platform.trim() } : {}),
-				},
-			],
-			overrides: [],
-		};
+		recurring.push({
+			days,
+			start: row.start.trim(),
+			duration_min:
+				Number.isFinite(duration) && duration > 0 ? duration : DEFAULT_DURATION,
+			...(row.title?.trim() ? { title: row.title.trim() } : {}),
+			...(row.game?.trim() ? { game: row.game.trim() } : {}),
+			...(platform ? { platform } : {}),
+		});
 	}
+
+	for (const block of decodeBlocks(row.streams)) {
+		recurring.push({
+			days: block.days,
+			start: block.start,
+			duration_min: block.duration_min,
+			...(block.game ? { game: block.game } : {}),
+			// Inherited, since the packed format carries no per-block platform. A
+			// streamer who really splits games across platforms needs a hand edit.
+			...(platform ? { platform } : {}),
+		});
+	}
+
+	// Replaces the schedule wholesale, so a submission that mentions no schedule at all
+	// leaves the existing one alone rather than clearing it.
+	if (recurring.length > 0) patch.schedule = { recurring, overrides: [] };
+
+	// Union rather than just the `games` column: a block naming a game the column
+	// omitted would otherwise never appear on that game's page.
+	const games = [
+		...new Set([...splitList(row.games), ...recurring.map((r) => r.game).filter(Boolean)]),
+	];
+	if (games.length > 0) patch.games = games;
 
 	return patch;
 }

@@ -2,6 +2,7 @@
 import { t, PLATFORM_LABEL, type Lang } from '../lib/i18n';
 import { DAYS, PLATFORMS } from '../lib/constants';
 import { getGameIndex, sortGames } from '../lib/games';
+import { DEFAULT_DURATION } from '../lib/schedule-encode';
 import type { Streamer } from '../lib/schedule';
 
 interface Props {
@@ -14,11 +15,32 @@ const s = t(lang);
 const d = entry.data;
 const games = sortGames([...(await getGameIndex()).values()]);
 
-// Pre-fill from the first recurring block. Editing the full multi-block schedule
-// through a form would need a much bigger UI; the sheet keeps the raw data, and
-// anything this form can't express still goes through manual moderation.
-const first = d.schedule.recurring[0];
 const primaryChannel = d.channels.find((c) => c.primary) ?? d.channels[0];
+
+/**
+ * Three schedules is the cap. Past that the form stops being a form, and a streamer
+ * with four distinct slots is rare enough to be worth a hand edit.
+ */
+const MAX_SLOTS = 3;
+
+// Duration and title have no visible control, so they ride along hidden. Without that
+// a form edit would quietly reset a hand-tuned 180 minute stream back to the default,
+// because the submission replaces the whole schedule rather than merging into it.
+const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
+	const block = d.schedule.recurring[i];
+	return {
+		n: i + 1,
+		// The first slot keeps the original field names, which are the sheet columns
+		// that already exist. Later slots are packed into `streams` client-side.
+		suffix: i === 0 ? '' : String(i + 1),
+		game: block?.game ?? (i === 0 ? (d.games[0]?.id ?? '') : ''),
+		start: block?.start ?? '20:00',
+		days: block?.days ?? [],
+		duration: block?.duration_min ?? DEFAULT_DURATION,
+		title: i === 0 ? (block?.title ?? '') : '',
+		visible: i === 0 || Boolean(block),
+	};
+});
 ---
 
 <section class="edit" data-edit data-slug={entry.id}>
@@ -56,37 +78,63 @@ const primaryChannel = d.channels.find((c) => c.primary) ?? d.channels[0];
 					<span class="field-label">{s.claimHandleLabel}</span>
 					<input type="text" name="handle" autocomplete="off" value={primaryChannel?.handle ?? ''} />
 				</label>
-
-				<label class="field">
-					<span class="field-label">{s.claimGameLabel}</span>
-					<select name="game">
-						<option value="">-</option>
-						{games.map((g) => (
-							<option value={g.id} selected={g.id === (first?.game ?? d.games[0]?.id)}>
-								{g.data.name}
-							</option>
-						))}
-					</select>
-				</label>
-
-				<label class="field">
-					<span class="field-label">{s.claimTimeLabel}</span>
-					<input type="time" name="start" value={first?.start ?? '20:00'} />
-				</label>
 			</div>
 
-			<fieldset class="days">
-				<legend class="field-label">{s.claimDaysLabel}</legend>
-				{DAYS.map((day, i) => (
-					<label class="day-toggle">
-						<input type="checkbox" name="days" value={day} checked={first?.days.includes(day)} />
-						<span>{s.dayShort[i]}</span>
-					</label>
-				))}
-			</fieldset>
+			{slots.map((slot) => (
+				<fieldset class="slot" data-slot hidden={!slot.visible}>
+					<legend class="slot-legend">{s.scheduleSlot(slot.n)}</legend>
+
+					<div class="grid">
+						<label class="field">
+							<span class="field-label">{s.claimGameLabel}</span>
+							<select name={`game${slot.suffix}`}>
+								<option value="">-</option>
+								{games.map((g) => (
+									<option value={g.id} selected={g.id === slot.game}>
+										{g.data.name}
+									</option>
+								))}
+							</select>
+						</label>
+
+						<label class="field">
+							<span class="field-label">{s.claimTimeLabel}</span>
+							<input type="time" name={`start${slot.suffix}`} value={slot.start} />
+						</label>
+					</div>
+
+					<fieldset class="days">
+						<legend class="field-label">{s.claimDaysLabel}</legend>
+						{DAYS.map((day, i) => (
+							<label class="day-toggle">
+								<input
+									type="checkbox"
+									name={`days${slot.suffix}`}
+									value={day}
+									checked={slot.days.includes(day)}
+								/>
+								<span>{s.dayShort[i]}</span>
+							</label>
+						))}
+					</fieldset>
+
+					<input type="hidden" name={`duration${slot.suffix}`} value={String(slot.duration)} />
+					{slot.title && <input type="hidden" name="title" value={slot.title} />}
+
+					{slot.n > 1 && <p class="hint">{s.scheduleGameHint}</p>}
+				</fieldset>
+			))}
 
 			<div class="actions">
 				<button type="submit">{s.editSubmit}</button>
+				<button
+					type="button"
+					class="secondary"
+					data-slot-add
+					hidden={slots.every((slot) => slot.visible)}
+				>
+					{s.scheduleAdd}
+				</button>
 			</div>
 
 			<p class="hint">{s.editLostKey}</p>
@@ -107,6 +155,7 @@ const primaryChannel = d.channels.find((c) => c.primary) ?? d.channels[0];
 <script>
 	import { hashEditKey, isWellFormedEditKey } from '../lib/edit-key';
 	import { SubmitNotConfiguredError, submitToForm } from '../lib/submit';
+	import { DEFAULT_DURATION, encodeBlocks } from '../lib/schedule-encode';
 
 	const root = document.querySelector<HTMLElement>('[data-edit]');
 	const form = root?.querySelector<HTMLFormElement>('[data-edit-form]');
@@ -115,6 +164,17 @@ const primaryChannel = d.channels.find((c) => c.primary) ?? d.channels[0];
 		const keyInput = form.querySelector<HTMLInputElement>('[data-key-input]');
 		const keyError = form.querySelector<HTMLElement>('[data-key-error]');
 		const pending = root.querySelector<HTMLElement>('[data-edit-pending]');
+		const addBtn = form.querySelector<HTMLButtonElement>('[data-slot-add]');
+		const slotEls = [...form.querySelectorAll<HTMLElement>('[data-slot]')];
+
+		// Reveals one slot at a time rather than showing three mostly-empty schedules to
+		// everyone. Hidden slots submit nothing, because a slot is read from its checked
+		// day boxes and a hidden one has none.
+		addBtn?.addEventListener('click', () => {
+			const next = slotEls.find((el) => el.hidden);
+			if (next) next.hidden = false;
+			if (!slotEls.some((el) => el.hidden)) addBtn.hidden = true;
+		});
 
 		form.addEventListener('submit', async (event) => {
 			event.preventDefault();
@@ -133,9 +193,23 @@ const primaryChannel = d.channels.find((c) => c.primary) ?? d.channels[0];
 			const keyHash = raw ? await hashEditKey(raw) : '';
 			const data = new FormData(form);
 			const value = (key: string) => String(data.get(key) ?? '');
-			const days = [...form.querySelectorAll<HTMLInputElement>('input[name="days"]:checked')]
-				.map((el) => el.value)
-				.join('|');
+			const daysOf = (name: string) =>
+				[...form.querySelectorAll<HTMLInputElement>(`input[name="${name}"]:checked`)].map(
+					(el) => el.value,
+				);
+
+			// Slots past the first are packed into one field. No days checked means the
+			// streamer dropped that schedule, so it is simply not encoded.
+			const extras = ['2', '3']
+				.map((suffix) => ({
+					game: value(`game${suffix}`),
+					days: daysOf(`days${suffix}`),
+					start: value(`start${suffix}`),
+					duration_min: Number(value(`duration${suffix}`)) || DEFAULT_DURATION,
+				}))
+				.filter((block) => block.days.length > 0);
+
+			const allGames = [value('game'), ...extras.map((b) => b.game)].filter(Boolean);
 
 			let outcome: 'sent' | 'preview' | 'failed';
 			try {
@@ -145,9 +219,12 @@ const primaryChannel = d.channels.find((c) => c.primary) ?? d.channels[0];
 					platform: value('platform'),
 					handle: value('handle'),
 					game: value('game'),
-					games: value('game'),
+					games: [...new Set(allGames)].join('|'),
 					start: value('start'),
-					days,
+					days: daysOf('days').join('|'),
+					duration_min: value('duration'),
+					title: value('title'),
+					streams: encodeBlocks(extras),
 				});
 				outcome = 'sent';
 			} catch (err) {
@@ -244,10 +321,35 @@ const primaryChannel = d.channels.find((c) => c.primary) ?? d.channels[0];
 		margin: 0.9rem 0;
 	}
 
+	.slot {
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.2rem 0.9rem 0.6rem;
+		margin: 0 0 0.9rem;
+		min-width: 0; /* fieldset defaults to min-content, which breaks the grid */
+	}
+
+	.slot[hidden] {
+		display: none;
+	}
+
+	.slot-legend {
+		padding: 0 0.4rem;
+		font-size: 0.78rem;
+		font-weight: 700;
+		color: var(--muted);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.slot .grid {
+		margin-top: 0.5rem;
+	}
+
 	.days {
 		border: 0;
 		padding: 0;
-		margin: 0 0 1rem;
+		margin: 0 0 0.6rem;
 	}
 
 	.days legend {
@@ -269,6 +371,10 @@ const primaryChannel = d.channels.find((c) => c.primary) ?? d.channels[0];
 		margin-bottom: 0.6rem;
 	}
 
+	.actions {
+		flex-wrap: wrap;
+	}
+
 	button {
 		font: inherit;
 		font-weight: 600;
@@ -278,6 +384,16 @@ const primaryChannel = d.channels.find((c) => c.primary) ?? d.channels[0];
 		border: 1px solid transparent;
 		border-radius: var(--radius);
 		padding: 0.6rem 1.1rem;
+	}
+
+	button.secondary {
+		background: transparent;
+		color: var(--muted);
+		border-color: var(--border);
+	}
+
+	button[hidden] {
+		display: none;
 	}
 
 	.pending {

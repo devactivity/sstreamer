@@ -90,6 +90,62 @@ describe('submissionToPatch', () => {
 	it('ignores days without a start time', () =>
 		assert.equal(submissionToPatch({ days: 'mon|wed' }).schedule, undefined));
 
+	it('appends packed blocks after the one built from the dedicated columns', () => {
+		const patch = submissionToPatch({
+			days: 'mon|wed',
+			start: '20:00',
+			game: 'mobile-legends',
+			platform: 'youtube',
+			handle: '@x',
+			streams: 'valorant|sat,sun|12:00|180',
+		});
+		assert.deepEqual(patch.schedule.recurring, [
+			{
+				days: ['mon', 'wed'],
+				start: '20:00',
+				duration_min: 120,
+				game: 'mobile-legends',
+				platform: 'youtube',
+			},
+			{
+				days: ['sat', 'sun'],
+				start: '12:00',
+				duration_min: 180,
+				game: 'valorant',
+				platform: 'youtube',
+			},
+		]);
+	});
+
+	it('builds a schedule from packed blocks even when the first slot is empty', () => {
+		const patch = submissionToPatch({ streams: 'valorant|sat|12:00|180' });
+		assert.deepEqual(patch.schedule.recurring, [
+			{ days: ['sat'], start: '12:00', duration_min: 180, game: 'valorant' },
+		]);
+	});
+
+	// A game named only inside a block would otherwise never reach that game's page,
+	// because the page is built from `games`, not from the schedule.
+	it('unions games from the column and from every block', () => {
+		const patch = submissionToPatch({
+			games: 'mobile-legends',
+			days: 'mon',
+			start: '20:00',
+			game: 'mobile-legends',
+			streams: 'valorant|sat|12:00|180;genshin-impact|sun|10:00|60',
+		});
+		assert.deepEqual(patch.games, ['mobile-legends', 'valorant', 'genshin-impact']);
+	});
+
+	it('leaves the schedule alone when nothing schedule-shaped was submitted', () =>
+		assert.equal(submissionToPatch({ bio: 'hi', streams: '' }).schedule, undefined));
+
+	it('keeps the first block when the packed field is malformed', () => {
+		const patch = submissionToPatch({ days: 'mon', start: '20:00', streams: 'garbage' });
+		assert.equal(patch.schedule.recurring.length, 1);
+		assert.deepEqual(patch.schedule.recurring[0].days, ['mon']);
+	});
+
 	// Without this the created profile stores no key, and every later edit is
 	// rejected with "profile has no key on record" - the feature dies silently.
 	it('persists a well-formed edit key hash', () =>

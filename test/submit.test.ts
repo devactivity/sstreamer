@@ -23,6 +23,7 @@ const ids: Record<SubmitField, string> = {
 	start: '',
 	duration_min: '',
 	title: '',
+	streams: '',
 	edit_key_hash: 'entry.9',
 };
 
@@ -32,6 +33,8 @@ describe('isSubmitConfigured', () => {
 	it('the shipped config is complete', () =>
 		assert.equal(isSubmitConfigured(FORM_ACTION, FIELD_IDS), true));
 
+	// An id that is present but malformed is dropped by Google without an error, and
+	// the response is opaque to us, so the field would silently stop submitting.
 	it('every field has an id, so no column is silently unreachable', () => {
 		for (const [field, id] of Object.entries(FIELD_IDS)) {
 			assert.match(id, /^entry\.\d+$/, `${field} has a malformed id: ${id}`);

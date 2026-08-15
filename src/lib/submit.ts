@@ -26,6 +26,8 @@ export type SubmitField =
 	| 'start'
 	| 'duration_min'
 	| 'title'
+	/** Schedule blocks past the first, packed. See `schedule-encode.ts`. */
+	| 'streams'
 	| 'edit_key_hash';
 
 /** The form's POST target, ending in /formResponse. */
@@ -54,6 +56,7 @@ export const FIELD_IDS: Record<SubmitField, string> = {
 	start: 'entry.1356248885',
 	duration_min: 'entry.1360799624',
 	title: 'entry.1585455517',
+	streams: 'entry.1503661019',
 	edit_key_hash: 'entry.1568322364',
 };
 
