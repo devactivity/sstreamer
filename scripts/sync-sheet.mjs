@@ -19,7 +19,13 @@
 import { createSign } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { STREAMER_DIR, readStreamers, toYaml, normaliseDates } from './lib/streamer-io.mjs';
+import {
+	STREAMER_DIR,
+	ensureStreamerDir,
+	readStreamers,
+	toYaml,
+	normaliseDates,
+} from './lib/streamer-io.mjs';
 import {
 	applyPatch,
 	decideSubmission,
@@ -182,6 +188,7 @@ if (dryRun) {
 	process.exit(0);
 }
 
+if (writes.size > 0) ensureStreamerDir();
 for (const [slug, data] of writes) {
 	writeFileSync(path.join(STREAMER_DIR, `${slug}.yaml`), toYaml(normaliseDates(data)));
 }

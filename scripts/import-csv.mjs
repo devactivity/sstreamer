@@ -17,6 +17,7 @@ import path from 'node:path';
 import { parseCsvRecords } from '../src/lib/csv.ts';
 import {
 	STREAMER_DIR,
+	ensureStreamerDir,
 	fingerprint,
 	fromRecord,
 	readStreamers,
@@ -104,7 +105,9 @@ if (!force) {
 	process.exit(0);
 }
 
-for (const entry of [...created, ...changed]) {
+const writes = [...created, ...changed];
+if (writes.length > 0) ensureStreamerDir();
+for (const entry of writes) {
 	writeFileSync(path.join(STREAMER_DIR, `${entry.slug}.yaml`), toYaml(entry.data));
 }
 

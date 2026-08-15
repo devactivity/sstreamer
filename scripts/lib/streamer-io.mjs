@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 // js-yaml 5 ships named exports only; there is no default export to import.
 import { load, dump } from 'js-yaml';
@@ -38,10 +38,25 @@ export function normaliseDates(value) {
 	return value;
 }
 
+/**
+ * Git does not track empty directories, so a repo with no streamers yet checks out
+ * without this directory at all. That is the normal state before the first profile
+ * is approved, not an error: treat it as no streamers.
+ */
 export function listStreamerFiles(dir = STREAMER_DIR) {
-	return readdirSync(dir)
-		.filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'))
-		.sort();
+	let entries;
+	try {
+		entries = readdirSync(dir);
+	} catch (err) {
+		if (err.code === 'ENOENT') return [];
+		throw err;
+	}
+	return entries.filter((f) => f.endsWith('.yaml') || f.endsWith('.yml')).sort();
+}
+
+/** Call before writing, for the same reason: the directory may not exist yet. */
+export function ensureStreamerDir(dir = STREAMER_DIR) {
+	mkdirSync(dir, { recursive: true });
 }
 
 export function readStreamers(dir = STREAMER_DIR) {
