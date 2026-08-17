@@ -113,3 +113,55 @@ describe('decodeBlocks', () => {
 		assert.equal(decodeBlocks(many).length, MAX_BLOCKS);
 	});
 });
+
+describe('per-block platform', () => {
+	it('carries a platform through a round trip', () => {
+		const blocks = [
+			{ game: 'valorant', days: ['sat'], start: '12:00', duration_min: 120, platform: 'twitch' },
+		];
+		assert.equal(encodeBlocks(blocks), 'valorant|sat|12:00|120|twitch');
+		assert.deepEqual(decodeBlocks(encodeBlocks(blocks)), blocks);
+	});
+
+	/**
+	 * The whole point of appending rather than inserting. Values written before this
+	 * field existed are sitting in the sheet right now, and they have to keep decoding
+	 * to exactly what they did before, with no platform of their own.
+	 */
+	it('decodes a four-field block written before this field existed', () => {
+		assert.deepEqual(decodeBlocks('valorant|sat|12:00|120'), [
+			{ game: 'valorant', days: ['sat'], start: '12:00', duration_min: 120 },
+		]);
+	});
+
+	it('omits the field entirely when no platform is set', () =>
+		assert.equal(
+			encodeBlocks([{ game: 'x', days: ['mon'], start: '09:00', duration_min: 60 }]),
+			'x|mon|09:00|60',
+		));
+
+	// A block reaching the schema with a platform outside the enum fails the build, and
+	// the sync build-verifies before committing, so one bad cell would stop the run for
+	// every streamer in it. Inheriting is the safe read.
+	it('ignores a platform outside the known list rather than dropping the block', () => {
+		const [block] = decodeBlocks('x|mon|09:00|60|kick');
+		assert.equal(block?.platform, undefined);
+		assert.equal(block?.start, '09:00');
+	});
+
+	it('ignores a platform that is empty or whitespace', () => {
+		assert.equal(decodeBlocks('x|mon|09:00|60|')[0].platform, undefined);
+		assert.equal(decodeBlocks('x|mon|09:00|60|   ')[0].platform, undefined);
+	});
+
+	it('accepts a platform in any case', () =>
+		assert.equal(decodeBlocks('x|mon|09:00|60|YouTube')[0].platform, 'youtube'));
+
+	it('refuses to encode a platform outside the known list', () =>
+		assert.equal(
+			encodeBlocks([
+				{ game: 'x', days: ['mon'], start: '09:00', duration_min: 60, platform: 'kick' },
+			]),
+			'x|mon|09:00|60',
+		));
+});

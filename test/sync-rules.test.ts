@@ -8,8 +8,10 @@ import {
 	decideSubmission,
 	applyPatch,
 	avatarUrl,
+	dropsChannel,
 	KEY_PROTECTED_FIELDS,
 } from '../scripts/lib/sync-rules.mjs';
+import { encodeChannels } from '../src/lib/channel-encode.ts';
 
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
@@ -54,6 +56,48 @@ describe('submissionToPatch', () => {
 			{ platform: 'youtube', handle: '@x', primary: true },
 		]);
 	});
+
+	it('appends the packed channels after the primary', () => {
+		const patch = submissionToPatch({
+			platform: 'tiktok',
+			handle: 'hurizzgaming',
+			channels: 'youtube|@hurizz;twitch|hurizzlive',
+		});
+		assert.deepEqual(patch.channels, [
+			{ platform: 'tiktok', handle: 'hurizzgaming', primary: true },
+			{ platform: 'youtube', handle: '@hurizz', primary: false },
+			{ platform: 'twitch', handle: 'hurizzlive', primary: false },
+		]);
+	});
+
+	// Whoever is first is what the profile page treats as primary, so a row carrying
+	// only packed channels must still produce exactly one.
+	it('marks the first packed channel primary when there is no primary column', () => {
+		const patch = submissionToPatch({ channels: 'youtube|@hurizz;twitch|live' });
+		assert.deepEqual(
+			patch.channels?.map((c) => c.primary),
+			[true, false],
+		);
+	});
+
+	it('does not list the same channel twice when it appears in both places', () => {
+		const patch = submissionToPatch({
+			platform: 'youtube',
+			handle: '@hurizz',
+			channels: 'youtube|@HURIZZ;twitch|live',
+		});
+		assert.equal(patch.channels?.length, 2);
+		assert.equal(patch.channels?.[0].primary, true);
+	});
+
+	it('leaves channels alone when the row mentions none', () =>
+		assert.equal(submissionToPatch({ bio: 'halo' }).channels, undefined));
+
+	it('lowercases the platform, since the schema enum is lowercase', () =>
+		assert.equal(
+			submissionToPatch({ platform: 'YouTube', handle: '@x' }).channels?.[0].platform,
+			'youtube',
+		));
 
 	it('builds a schedule block from days plus start', () => {
 		const patch = submissionToPatch({
@@ -146,6 +190,44 @@ describe('submissionToPatch', () => {
 		assert.equal(patch.schedule.recurring.length, 1);
 		assert.deepEqual(patch.schedule.recurring[0].days, ['mon']);
 	});
+
+	it('gives a packed block its own platform when it names one', () => {
+		const patch = submissionToPatch({
+			platform: 'tiktok',
+			streams: 'valorant|sat|12:00|180|youtube',
+		});
+		assert.equal(patch.schedule.recurring[0].platform, 'youtube');
+	});
+
+	// The behaviour every packed block had before the format carried a platform, and
+	// what most rows will keep doing.
+	it('inherits the primary platform for a block that names none', () => {
+		const patch = submissionToPatch({ platform: 'tiktok', streams: 'valorant|sat|12:00|180' });
+		assert.equal(patch.schedule.recurring[0].platform, 'tiktok');
+	});
+
+	it('lets one profile split games across platforms', () => {
+		const patch = submissionToPatch({
+			platform: 'tiktok',
+			days: 'mon',
+			start: '20:00',
+			game: 'mobile-legends',
+			streams: 'valorant|sat|12:00|180|youtube',
+		});
+		assert.deepEqual(
+			patch.schedule.recurring.map((r) => [r.game, r.platform]),
+			[
+				['mobile-legends', 'tiktok'],
+				['valorant', 'youtube'],
+			],
+		);
+	});
+
+	it('omits the platform entirely when neither the block nor the row has one', () =>
+		assert.equal(
+			'platform' in submissionToPatch({ streams: 'valorant|sat|12:00|180' }).schedule.recurring[0],
+			false,
+		));
 
 	/**
 	 * `avatar` is a repo-relative path resolved by Astro at build time. A URL there
@@ -399,6 +481,167 @@ describe('full lifecycle: create then edit with the same key', () => {
 		});
 		assert.equal(d.action, 'queue');
 		assert.match(d.reason, /does not match/);
+	});
+});
+
+describe('dropsChannel', () => {
+	const tiktok = { platform: 'tiktok', handle: 'hurizzgaming', primary: true };
+	const youtube = { platform: 'youtube', handle: '@hurizz', primary: false };
+
+	it('is false when a channel is only added', () =>
+		assert.equal(dropsChannel({ channels: [tiktok] }, { channels: [tiktok, youtube] }), false));
+
+	it('is true when a channel disappears', () =>
+		assert.equal(dropsChannel({ channels: [tiktok, youtube] }, { channels: [tiktok] }), true));
+
+	// The case that matters most: same platform, different account. Nothing about the
+	// list length gives it away.
+	it('is true when a handle is repointed at another account', () =>
+		assert.equal(
+			dropsChannel(
+				{ channels: [tiktok] },
+				{ channels: [{ platform: 'tiktok', handle: 'someone-else' }] },
+			),
+			true,
+		));
+
+	it('ignores which channel is primary, since reordering loses nothing', () =>
+		assert.equal(
+			dropsChannel(
+				{ channels: [tiktok, youtube] },
+				{ channels: [{ ...youtube, primary: true }, { ...tiktok, primary: false }] },
+			),
+			false,
+		));
+
+	it('ignores handle case', () =>
+		assert.equal(
+			dropsChannel({ channels: [youtube] }, { channels: [{ ...youtube, handle: '@HURIZZ' }] }),
+			false,
+		));
+
+	// A patch that says nothing about channels is not deleting them: applyPatch leaves
+	// the existing list in place.
+	it('is false when the patch has no channels at all', () =>
+		assert.equal(dropsChannel({ channels: [tiktok] }, { bio: 'new' }), false));
+
+	it('is false for a profile that had no channels', () =>
+		assert.equal(dropsChannel({}, { channels: [tiktok] }), false));
+});
+
+describe('channel changes under a valid key', () => {
+	const existing = {
+		name: 'Hurizz',
+		edit_key_hash: HASH_A,
+		channels: [
+			{ platform: 'tiktok', handle: 'hurizzgaming', primary: true },
+			{ platform: 'youtube', handle: '@hurizz', primary: false },
+		],
+	};
+
+	/**
+	 * The regression this all exists for. The edit form prefills only the primary
+	 * channel, so an ordinary edit resubmits one channel and the patch replaces the
+	 * list. Before this was protected, a valid key applied that automatically and the
+	 * second channel was gone with nothing to notice.
+	 */
+	it('queues an edit that would delete a channel the form did not know about', () => {
+		const d = decideSubmission({
+			row: {
+				slug: 'hurizz',
+				edit_key_hash: HASH_A,
+				platform: 'tiktok',
+				handle: 'hurizzgaming',
+				days: 'sat',
+				start: '12:00',
+			},
+			existing,
+		});
+		assert.equal(d.action, 'queue');
+		assert.match(d.reason, /channels/);
+	});
+
+	it('applies an edit that keeps every channel and adds one', () => {
+		const d = decideSubmission({
+			row: {
+				slug: 'hurizz',
+				edit_key_hash: HASH_A,
+				platform: 'tiktok',
+				handle: 'hurizzgaming',
+				channels: 'youtube|@hurizz;twitch|hurizzlive',
+			},
+			existing,
+		});
+		assert.equal(d.action, 'update');
+		assert.match(d.reason, /valid edit key/);
+	});
+
+	it('queues an edit that repoints a channel at another account', () => {
+		const d = decideSubmission({
+			row: {
+				slug: 'hurizz',
+				edit_key_hash: HASH_A,
+				platform: 'tiktok',
+				handle: 'not-hurizz',
+				channels: 'youtube|@hurizz',
+			},
+			existing,
+		});
+		assert.equal(d.action, 'queue');
+		assert.match(d.reason, /channels/);
+	});
+
+	// Adding the first channel to a profile that has none is how ClaimForm's second
+	// step works, and it must not need a human.
+	it('applies the first channel on a profile that had none', () => {
+		const d = decideSubmission({
+			row: {
+				slug: 'baru',
+				edit_key_hash: HASH_A,
+				platform: 'tiktok',
+				handle: 'baru',
+			},
+			existing: { name: 'Baru', edit_key_hash: HASH_A, channels: [] },
+		});
+		assert.equal(d.action, 'update');
+	});
+
+	/**
+	 * The browser encodes this column and the Action decodes it. A divergence would
+	 * drop channels with no error anywhere, so the two halves are checked against each
+	 * other rather than each against its own fixture.
+	 */
+	it('round-trips what the edit form would send', () => {
+		const typed = [
+			{ platform: 'youtube', handle: '@hurizz' },
+			{ platform: 'twitch', handle: 'hurizzlive' },
+		];
+		const patch = submissionToPatch({
+			platform: 'tiktok',
+			handle: 'hurizzgaming',
+			channels: encodeChannels(typed),
+		});
+		assert.deepEqual(patch.channels, [
+			{ platform: 'tiktok', handle: 'hurizzgaming', primary: true },
+			{ platform: 'youtube', handle: '@hurizz', primary: false },
+			{ platform: 'twitch', handle: 'hurizzlive', primary: false },
+		]);
+		assert.equal(dropsChannel({ channels: patch.channels }, patch), false);
+	});
+
+	it('still lets an explicit approval through', () => {
+		const d = decideSubmission({
+			row: {
+				slug: 'hurizz',
+				approved: 'ya',
+				edit_key_hash: HASH_A,
+				platform: 'tiktok',
+				handle: 'hurizzgaming',
+			},
+			existing,
+		});
+		assert.equal(d.action, 'update');
+		assert.match(d.reason, /approved in sheet/);
 	});
 });
 

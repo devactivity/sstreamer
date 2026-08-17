@@ -25,6 +25,7 @@ export type SubmitField =
 	| 'games'
 	| 'platform'
 	| 'handle'
+	| 'channels'
 	| 'game'
 	| 'days'
 	| 'start'
@@ -62,6 +63,7 @@ export const FIELD_IDS: Record<SubmitField, string> = {
 	games: 'entry.1311019079',
 	platform: 'entry.677791728',
 	handle: 'entry.1437226508',
+	channels: 'entry.132702492',
 	game: 'entry.835559590',
 	days: 'entry.1506235148',
 	start: 'entry.1356248885',

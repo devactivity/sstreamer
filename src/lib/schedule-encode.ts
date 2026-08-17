@@ -11,19 +11,26 @@
  * The first block keeps its own dedicated columns, so none of the existing form
  * questions or entry ids change.
  *
- * Per-block `title` and `platform` are deliberately not carried here. Both would need
- * escaping inside a delimited field, and a form edit would silently overwrite anything
- * set by hand. Blocks past the first inherit the profile's primary platform.
+ * A fifth field carries an optional per-block platform, for a streamer who plays one
+ * game on YouTube and another on TikTok. It is safe in a delimited field where `title`
+ * is not, because it is a closed vocabulary from `PLATFORMS` containing no separator
+ * characters, whereas a title is free text that would need escaping. Blocks written
+ * without it stay valid and keep inheriting the profile's primary platform, so values
+ * encoded before this field existed still decode correctly.
+ *
+ * Per-block `title` is still deliberately not carried here.
  */
 
 // Explicit extension so this module runs under plain `node` for testing, not just Vite.
-import { DAYS } from './constants.ts';
+import { DAYS, PLATFORMS } from './constants.ts';
 
 export type ScheduleBlock = {
 	game: string;
 	days: string[];
 	start: string;
 	duration_min: number;
+	/** Absent means inherit the profile's primary platform. */
+	platform?: string;
 };
 
 const BLOCK_SEP = ';';
@@ -41,15 +48,23 @@ const MAX_DURATION = 1440;
 export const MAX_BLOCKS = 8;
 
 const dayOrder = (day: string) => DAYS.indexOf(day as (typeof DAYS)[number]);
+const isPlatform = (value: string) => (PLATFORMS as readonly string[]).includes(value);
 
 export function encodeBlocks(blocks: ScheduleBlock[]): string {
 	return blocks
 		.filter((b) => b.days.length > 0 && TIME.test(b.start))
-		.map((b) =>
-			[b.game, [...b.days].sort((a, z) => dayOrder(a) - dayOrder(z)).join(DAY_SEP), b.start, String(b.duration_min)].join(
-				FIELD_SEP,
-			),
-		)
+		.map((b) => {
+			const fields = [
+				b.game,
+				[...b.days].sort((a, z) => dayOrder(a) - dayOrder(z)).join(DAY_SEP),
+				b.start,
+				String(b.duration_min),
+			];
+			// Appended only when set, so a block with no platform encodes exactly as it
+			// did before this field existed and diffs stay quiet.
+			if (b.platform && isPlatform(b.platform)) fields.push(b.platform);
+			return fields.join(FIELD_SEP);
+		})
 		.join(BLOCK_SEP);
 }
 
@@ -65,7 +80,7 @@ export function decodeBlocks(raw: string | undefined | null): ScheduleBlock[] {
 		if (blocks.length >= MAX_BLOCKS) break;
 		if (!chunk.trim()) continue;
 
-		const [game = '', days = '', start = '', duration = ''] = chunk
+		const [game = '', days = '', start = '', duration = '', platform = ''] = chunk
 			.split(FIELD_SEP)
 			.map((part) => part.trim());
 
@@ -79,6 +94,7 @@ export function decodeBlocks(raw: string | undefined | null): ScheduleBlock[] {
 		if (!TIME.test(start)) continue;
 
 		const minutes = Number(duration);
+		const normalisedPlatform = platform.toLowerCase();
 
 		blocks.push({
 			game,
@@ -90,6 +106,10 @@ export function decodeBlocks(raw: string | undefined | null): ScheduleBlock[] {
 				Number.isInteger(minutes) && minutes > 0 && minutes <= MAX_DURATION
 					? minutes
 					: DEFAULT_DURATION,
+			// An unrecognised platform falls back to inheriting rather than dropping the
+			// block: the schedule is the point, and a bad platform would fail the schema
+			// and take the whole sync run down with it.
+			...(isPlatform(normalisedPlatform) ? { platform: normalisedPlatform } : {}),
 		});
 	}
 

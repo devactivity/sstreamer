@@ -3,6 +3,7 @@ import { t, PLATFORM_LABEL, type Lang } from '../lib/i18n';
 import { DAYS, PLATFORMS } from '../lib/constants';
 import { getGameIndex, sortGames } from '../lib/games';
 import { DEFAULT_DURATION } from '../lib/schedule-encode';
+import { FIELD_IDS } from '../lib/submit';
 import type { Streamer } from '../lib/schedule';
 
 interface Props {
@@ -18,10 +19,42 @@ const games = sortGames([...(await getGameIndex()).values()]);
 const primaryChannel = d.channels.find((c) => c.primary) ?? d.channels[0];
 
 /**
+ * Everything except the primary, which has its own two fields above. These are packed
+ * into the `channels` column client-side.
+ *
+ * They must be rendered back into the form even when the streamer only came to change
+ * a time. A submission replaces the channel list rather than merging into it, so a
+ * channel missing from the form is a channel asking to be deleted.
+ */
+const extraChannels = d.channels.filter((c) => c !== primaryChannel);
+
+/**
  * Three schedules is the cap. Past that the form stops being a form, and a streamer
  * with four distinct slots is rare enough to be worth a hand edit.
  */
 const MAX_SLOTS = 3;
+
+/** Same reasoning, and there are only four platforms to pick from in the first place. */
+const MAX_CHANNEL_SLOTS = 2;
+
+/**
+ * Hidden until the `channels` question exists on the form. Without an entry id the
+ * value is dropped before it is sent, so showing the fields would let a streamer type
+ * a channel, submit, and watch nothing happen - the response is opaque, so not even
+ * the page could tell them. Everything else on the form still works meanwhile.
+ */
+const canSubmitChannels = FIELD_IDS.channels !== '';
+
+const channelSlots = Array.from({ length: MAX_CHANNEL_SLOTS }, (_, i) => {
+	const channel = extraChannels[i];
+	return {
+		n: i + 1,
+		suffix: String(i + 2),
+		platform: channel?.platform ?? '',
+		handle: channel?.handle ?? '',
+		visible: Boolean(channel),
+	};
+});
 
 // Duration and title have no visible control, so they ride along hidden. Without that
 // a form edit would quietly reset a hand-tuned 180 minute stream back to the default,
@@ -38,6 +71,10 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 		days: block?.days ?? [],
 		duration: block?.duration_min ?? DEFAULT_DURATION,
 		title: i === 0 ? (block?.title ?? '') : '',
+		// Only slots past the first get their own platform picker: the first slot's
+		// platform is the profile's primary, chosen by the fields above. Blank means
+		// inherit, which is what every schedule did before this was selectable.
+		platform: i === 0 ? '' : (block?.platform ?? ''),
 		visible: i === 0 || Boolean(block),
 	};
 });
@@ -79,6 +116,37 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 					<input type="text" name="handle" autocomplete="off" value={primaryChannel?.handle ?? ''} />
 				</label>
 			</div>
+
+			{canSubmitChannels && channelSlots.map((slot) => (
+				<fieldset class="slot" data-channel-slot hidden={!slot.visible}>
+					<legend class="slot-legend">{s.channelSlot(slot.n)}</legend>
+
+					<div class="grid">
+						<label class="field">
+							<span class="field-label">{s.claimPlatformLabel}</span>
+							<select name={`platform${slot.suffix}`}>
+								{PLATFORMS.map((p) => (
+									<option value={p} selected={p === slot.platform}>
+										{PLATFORM_LABEL[p] ?? p}
+									</option>
+								))}
+							</select>
+						</label>
+
+						<label class="field">
+							<span class="field-label">{s.claimHandleLabel}</span>
+							<input
+								type="text"
+								name={`handle${slot.suffix}`}
+								autocomplete="off"
+								value={slot.handle}
+							/>
+						</label>
+					</div>
+
+					<p class="hint">{s.channelHint}</p>
+				</fieldset>
+			))}
 
 			{/*
 			  Not pre-filled from the existing avatar: that is a repo path, not a URL, and
@@ -135,6 +203,24 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 						))}
 					</fieldset>
 
+					{slot.n > 1 && (
+						<label class="field">
+							<span class="field-label">{s.schedulePlatformLabel}</span>
+							<select name={`platform_slot${slot.suffix}`}>
+								{/* Blank, and selected by default, so a streamer who does not
+								    split games across platforms never has to think about it. */}
+								<option value="" selected={slot.platform === ''}>
+									{s.schedulePlatformInherit}
+								</option>
+								{PLATFORMS.map((p) => (
+									<option value={p} selected={p === slot.platform}>
+										{PLATFORM_LABEL[p] ?? p}
+									</option>
+								))}
+							</select>
+						</label>
+					)}
+
 					<input type="hidden" name={`duration${slot.suffix}`} value={String(slot.duration)} />
 					{slot.title && <input type="hidden" name="title" value={slot.title} />}
 
@@ -144,6 +230,16 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 
 			<div class="actions">
 				<button type="submit">{s.editSubmit}</button>
+				{canSubmitChannels && (
+					<button
+						type="button"
+						class="secondary"
+						data-channel-add
+						hidden={channelSlots.every((slot) => slot.visible)}
+					>
+						{s.channelAdd}
+					</button>
+				)}
 				<button
 					type="button"
 					class="secondary"
@@ -154,6 +250,7 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 				</button>
 			</div>
 
+			{canSubmitChannels && <p class="hint">{s.channelReview}</p>}
 			<p class="hint">{s.editLostKey}</p>
 		</form>
 
@@ -173,6 +270,7 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 	import { hashEditKey, isWellFormedEditKey } from '../lib/edit-key';
 	import { SubmitNotConfiguredError, submitToForm } from '../lib/submit';
 	import { DEFAULT_DURATION, encodeBlocks } from '../lib/schedule-encode';
+	import { encodeChannels } from '../lib/channel-encode';
 
 	const root = document.querySelector<HTMLElement>('[data-edit]');
 	const form = root?.querySelector<HTMLFormElement>('[data-edit-form]');
@@ -183,15 +281,23 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 		const pending = root.querySelector<HTMLElement>('[data-edit-pending]');
 		const addBtn = form.querySelector<HTMLButtonElement>('[data-slot-add]');
 		const slotEls = [...form.querySelectorAll<HTMLElement>('[data-slot]')];
+		const channelAddBtn = form.querySelector<HTMLButtonElement>('[data-channel-add]');
+		const channelEls = [...form.querySelectorAll<HTMLElement>('[data-channel-slot]')];
 
 		// Reveals one slot at a time rather than showing three mostly-empty schedules to
 		// everyone. Hidden slots submit nothing, because a slot is read from its checked
 		// day boxes and a hidden one has none.
-		addBtn?.addEventListener('click', () => {
-			const next = slotEls.find((el) => el.hidden);
+		const reveal = (els: HTMLElement[], button: HTMLButtonElement | null) => {
+			const next = els.find((el) => el.hidden);
 			if (next) next.hidden = false;
-			if (!slotEls.some((el) => el.hidden)) addBtn.hidden = true;
-		});
+			if (button && !els.some((el) => el.hidden)) button.hidden = true;
+		};
+
+		addBtn?.addEventListener('click', () => reveal(slotEls, addBtn));
+
+		// Same idea for channels, except a hidden channel submits nothing because its
+		// handle field is empty, which is also how a visible one is dropped.
+		channelAddBtn?.addEventListener('click', () => reveal(channelEls, channelAddBtn));
 
 		form.addEventListener('submit', async (event) => {
 			event.preventDefault();
@@ -223,8 +329,20 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 					days: daysOf(`days${suffix}`),
 					start: value(`start${suffix}`),
 					duration_min: Number(value(`duration${suffix}`)) || DEFAULT_DURATION,
+					// Blank means inherit the primary platform, so it is left off the
+					// block entirely rather than encoded as an empty field.
+					platform: value(`platform_slot${suffix}`) || undefined,
 				}))
 				.filter((block) => block.days.length > 0);
+
+			// Channels past the first, packed the same way. An empty handle is how a
+			// streamer drops a channel, so those are simply not encoded.
+			const extraChannels = ['2', '3']
+				.map((suffix) => ({
+					platform: value(`platform${suffix}`),
+					handle: value(`handle${suffix}`).trim(),
+				}))
+				.filter((channel) => channel.handle !== '');
 
 			const allGames = [value('game'), ...extras.map((b) => b.game)].filter(Boolean);
 
@@ -235,6 +353,7 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 					edit_key_hash: keyHash,
 					platform: value('platform'),
 					handle: value('handle'),
+					channels: encodeChannels(extraChannels),
 					game: value('game'),
 					games: [...new Set(allGames)].join('|'),
 					start: value('start'),

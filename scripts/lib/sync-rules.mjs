@@ -11,8 +11,34 @@
  * Changes to these still queue for review even with a valid key. They are the
  * impersonation-sensitive fields: a stolen or shared key shouldn't be able to
  * rename a profile or swap its picture without a human seeing it.
+ *
+ * `channels` is not here because it is only conditionally protected. See `dropsChannel`.
  */
 export const KEY_PROTECTED_FIELDS = ['name', 'avatar'];
+
+/**
+ * Whether a channel change destroys something, rather than only adding.
+ *
+ * Adding a platform is ordinary: a streamer who starts streaming on YouTube as well
+ * should not wait on a human for it. Removing a channel, or repointing an existing one
+ * at a different account, gets the same look as a rename, because both send the
+ * profile's traffic somewhere the last approved version did not.
+ *
+ * This matters beyond a stolen key. A submission replaces the channel list rather than
+ * merging into it, so an edit made from a form that has fallen out of step with the
+ * profile would otherwise delete the channels it did not know about, automatically and
+ * with nothing to notice.
+ *
+ * Compared on platform and handle only. Reordering which channel is primary loses
+ * nothing, so it is not worth stopping.
+ */
+export function dropsChannel(existing, patch) {
+	if (!Array.isArray(existing?.channels) || !Array.isArray(patch?.channels)) return false;
+
+	const key = (c) => `${String(c.platform).toLowerCase()} ${String(c.handle).toLowerCase()}`;
+	const kept = new Set(patch.channels.map(key));
+	return existing.channels.some((c) => !kept.has(key(c)));
+}
 
 /** Truthy spellings a human might put in the `approved` column. */
 const TRUTHY = new Set(['true', 'yes', 'y', '1', 'ok', 'approved', 'ya', 'setuju']);
@@ -28,6 +54,7 @@ export { slugify } from '../../src/lib/text.ts';
 // Same reason: the browser encodes extra schedule blocks, this decodes them, and a
 // divergent format would drop schedules without any error to notice.
 import { DEFAULT_DURATION, decodeBlocks } from '../../src/lib/schedule-encode.ts';
+import { decodeChannels } from '../../src/lib/channel-encode.ts';
 
 const splitList = (value) =>
 	String(value ?? '')
@@ -62,14 +89,35 @@ export function submissionToPatch(row) {
 	const aliases = splitList(row.aliases);
 	if (aliases.length > 0) patch.aliases = aliases;
 
+	// The first channel keeps its own columns; the rest arrive packed in one. Combined
+	// rather than replaced one by one, because the schema wants a single ordered list
+	// and the first entry is what the profile page treats as primary.
+	//
+	// This still replaces the whole list rather than merging into the existing one, so
+	// a submission that omits a channel drops it. That is deliberate - it is how a
+	// streamer removes a channel at all - and it is why `channels` is key-protected:
+	// the removal goes past you rather than applying on its own.
+	const channels = [];
 	if (row.platform?.trim() && row.handle?.trim()) {
-		patch.channels = [
-			{ platform: row.platform.trim(), handle: row.handle.trim(), primary: true },
-		];
+		channels.push({ platform: row.platform.trim().toLowerCase(), handle: row.handle.trim() });
+	}
+	channels.push(...decodeChannels(row.channels));
+
+	const seenChannels = new Set();
+	const uniqueChannels = channels.filter((c) => {
+		const key = `${c.platform} ${c.handle.toLowerCase()}`;
+		if (seenChannels.has(key)) return false;
+		seenChannels.add(key);
+		return true;
+	});
+
+	if (uniqueChannels.length > 0) {
+		patch.channels = uniqueChannels.map((c, i) => ({ ...c, primary: i === 0 }));
 	}
 
 	const recurring = [];
-	const platform = row.platform?.trim();
+	/** What a block falls back to when it names no platform of its own. */
+	const platform = row.platform?.trim().toLowerCase();
 
 	// The first block has its own columns, kept as-is so no existing form question or
 	// entry id has to change. Everything after it arrives packed in one column.
@@ -90,14 +138,16 @@ export function submissionToPatch(row) {
 	}
 
 	for (const block of decodeBlocks(row.streams)) {
+		// A block may name its own platform, for a streamer who plays one game on
+		// YouTube and another on TikTok. Falls back to the profile's primary, which is
+		// what every block did before the packed format carried a platform at all.
+		const blockPlatform = block.platform ?? platform;
 		recurring.push({
 			days: block.days,
 			start: block.start,
 			duration_min: block.duration_min,
 			...(block.game ? { game: block.game } : {}),
-			// Inherited, since the packed format carries no per-block platform. A
-			// streamer who really splits games across platforms needs a hand edit.
-			...(platform ? { platform } : {}),
+			...(blockPlatform ? { platform: blockPlatform } : {}),
 		});
 	}
 
@@ -200,6 +250,8 @@ function decideAction({ row, existing, patch }) {
 	}
 
 	const protectedHits = changed.filter((f) => KEY_PROTECTED_FIELDS.includes(f));
+	if (changed.includes('channels') && dropsChannel(existing, patch)) protectedHits.push('channels');
+
 	if (protectedHits.length > 0) {
 		return {
 			action: 'queue',

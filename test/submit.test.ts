@@ -18,6 +18,7 @@ const ids: Record<SubmitField, string> = {
 	games: '',
 	platform: 'entry.4',
 	handle: '',
+	channels: '',
 	game: '',
 	days: '',
 	start: '',
