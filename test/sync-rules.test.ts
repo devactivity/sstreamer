@@ -7,6 +7,7 @@ import {
 	changedFields,
 	decideSubmission,
 	applyPatch,
+	avatarUrl,
 	KEY_PROTECTED_FIELDS,
 } from '../scripts/lib/sync-rules.mjs';
 
@@ -146,6 +147,22 @@ describe('submissionToPatch', () => {
 		assert.deepEqual(patch.schedule.recurring[0].days, ['mon']);
 	});
 
+	/**
+	 * `avatar` is a repo-relative path resolved by Astro at build time. A URL there
+	 * fails the build, and the sync build-verifies before committing, so a single bad
+	 * value would stop the run for every streamer in it. Nothing from a submission may
+	 * reach this field, whatever the column is called.
+	 */
+	it('never writes an avatar, however the row spells it', () => {
+		for (const row of [
+			{ avatar: 'https://example.com/x.png' },
+			{ avatar: './avatars/evil.png' },
+			{ avatar_url: 'https://example.com/x.png' },
+		]) {
+			assert.ok(!('avatar' in submissionToPatch(row)), JSON.stringify(row));
+		}
+	});
+
 	// Without this the created profile stores no key, and every later edit is
 	// rejected with "profile has no key on record" - the feature dies silently.
 	it('persists a well-formed edit key hash', () =>
@@ -164,6 +181,40 @@ describe('submissionToPatch', () => {
 				undefined,
 				`should have rejected ${JSON.stringify(bad)}`,
 			);
+		}
+	});
+});
+
+describe('avatarUrl', () => {
+	it('accepts http and https', () => {
+		assert.equal(
+			avatarUrl({ avatar_url: 'https://i.imgur.com/x.png' }),
+			'https://i.imgur.com/x.png',
+		);
+		assert.equal(avatarUrl({ avatar_url: 'http://example.com/x.png' }), 'http://example.com/x.png');
+	});
+
+	it('trims, because a spreadsheet cell will have whitespace', () =>
+		assert.equal(
+			avatarUrl({ avatar_url: '  https://example.com/x.png  ' }),
+			'https://example.com/x.png',
+		));
+
+	it('is undefined when nothing was asked for', () => {
+		assert.equal(avatarUrl({}), undefined);
+		assert.equal(avatarUrl({ avatar_url: '' }), undefined);
+		assert.equal(avatarUrl({ avatar_url: '   ' }), undefined);
+	});
+
+	// This value gets printed into a log that a human then clicks.
+	it('rejects schemes that have no business in a log you will click', () => {
+		for (const bad of [
+			'javascript:alert(1)',
+			'data:text/html,<script>alert(1)</script>',
+			'file:///etc/passwd',
+			'not a url at all',
+		]) {
+			assert.equal(avatarUrl({ avatar_url: bad }), undefined, bad);
 		}
 	});
 });
@@ -243,10 +294,14 @@ describe('decideSubmission', () => {
 		assert.ok(KEY_PROTECTED_FIELDS.includes('name'));
 	});
 
+	// No submission can reach `avatar` any more, so the patch is supplied directly
+	// here. The guard stays as defence in depth: it is what would have to hold if an
+	// avatar intake is ever added, and it should not quietly rot in the meantime.
 	it('queues an avatar swap even with a valid key', () => {
 		const d = decideSubmission({
-			row: { edit_key_hash: HASH_A, avatar: './avatars/other.png' },
+			row: { edit_key_hash: HASH_A },
 			existing,
+			patch: { avatar: './avatars/other.png' },
 		});
 		assert.equal(d.action, 'queue');
 		assert.match(d.reason, /protected field/);
@@ -265,6 +320,34 @@ describe('decideSubmission', () => {
 		const d = decideSubmission({ row: { edit_key_hash: HASH_A, bio: 'old' }, existing });
 		assert.equal(d.action, 'skip');
 	});
+
+	// A picture request changes nothing the sync can write, so the row is a `skip`.
+	// If the request did not survive that branch, it would never be reported and the
+	// streamer would be waiting on something nobody ever saw.
+	it('reports a picture request even on a row that changes nothing else', () => {
+		const d = decideSubmission({
+			row: { edit_key_hash: HASH_A, bio: 'old', avatar_url: 'https://example.com/x.png' },
+			existing,
+		});
+		assert.equal(d.action, 'skip');
+		assert.equal(d.avatarRequest, 'https://example.com/x.png');
+	});
+
+	it('carries a picture request through without blocking the edit it came with', () => {
+		const d = decideSubmission({
+			row: { edit_key_hash: HASH_A, bio: 'new bio', avatar_url: 'https://example.com/x.png' },
+			existing,
+		});
+		assert.equal(d.action, 'update');
+		assert.deepEqual(d.changed, ['bio']);
+		assert.equal(d.avatarRequest, 'https://example.com/x.png');
+	});
+
+	it('leaves avatarRequest undefined when none was asked for', () =>
+		assert.equal(
+			decideSubmission({ row: { edit_key_hash: HASH_A, bio: 'new' }, existing }).avatarRequest,
+			undefined,
+		));
 });
 
 describe('full lifecycle: create then edit with the same key', () => {

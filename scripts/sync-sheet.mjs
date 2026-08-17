@@ -147,6 +147,7 @@ const current = new Map(readStreamers().map((s) => [s.slug, s.data]));
 const today = new Date().toISOString().slice(0, 10);
 const writes = new Map();
 const queued = [];
+const avatarRequests = [];
 let skipped = 0;
 
 for (const [i, row] of rows.entries()) {
@@ -159,7 +160,13 @@ for (const [i, row] of rows.entries()) {
 
 	const existing = writes.get(slug) ?? current.get(slug) ?? null;
 	const patch = submissionToPatch(row);
-	const { action, reason, changed } = decideSubmission({ row, existing, patch });
+	const { action, reason, changed, avatarRequest } = decideSubmission({ row, existing, patch });
+
+	// Collected before the action is handled, so a row whose only content is a picture
+	// request still reports rather than vanishing into the `skip` count.
+	if (avatarRequest) {
+		avatarRequests.push({ line, slug, url: avatarRequest, has: Boolean(existing?.avatar) });
+	}
 
 	if (action === 'skip') {
 		skipped++;
@@ -181,6 +188,15 @@ console.log(
 if (queued.length > 0) {
 	console.log('\nneeds your review in the sheet (tick `approved` to let it through):');
 	for (const q of queued) console.log(`  line ${q.line} ${q.slug}: ${q.reason}`);
+}
+
+// Never applied automatically. `avatar` is a repo-relative path Astro resolves at
+// build time, so saving the file and pointing at it is a commit, not a sheet tick.
+if (avatarRequests.length > 0) {
+	console.log('\npictures requested (save by hand, then delete the sheet row):');
+	for (const a of avatarRequests) {
+		console.log(`  line ${a.line} ${a.slug}${a.has ? ' (replacing existing)' : ''}: ${a.url}`);
+	}
 }
 
 if (dryRun) {

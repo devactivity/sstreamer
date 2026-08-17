@@ -24,6 +24,7 @@ const ids: Record<SubmitField, string> = {
 	duration_min: '',
 	title: '',
 	streams: '',
+	avatar_url: '',
 	edit_key_hash: 'entry.9',
 };
 
@@ -33,16 +34,37 @@ describe('isSubmitConfigured', () => {
 	it('the shipped config is complete', () =>
 		assert.equal(isSubmitConfigured(FORM_ACTION, FIELD_IDS), true));
 
+	/**
+	 * Fields whose form question does not exist yet. Blank ids are dropped by
+	 * toFormEntries, so these send nothing rather than sending wrongly. Remove a field
+	 * from here the moment its id is filled in, or the guard below stops covering it.
+	 *
+	 * Empty is the healthy state: every field is wired, so the guard below covers all
+	 * of them. Only add to this while a question is genuinely still missing.
+	 */
+	const AWAITING_QUESTION = new Set<string>();
+
 	// An id that is present but malformed is dropped by Google without an error, and
 	// the response is opaque to us, so the field would silently stop submitting.
-	it('every field has an id, so no column is silently unreachable', () => {
+	it('every wired field has an id, so no column is silently unreachable', () => {
 		for (const [field, id] of Object.entries(FIELD_IDS)) {
+			if (AWAITING_QUESTION.has(field)) continue;
 			assert.match(id, /^entry\.\d+$/, `${field} has a malformed id: ${id}`);
 		}
 	});
 
+	it('fields awaiting a question are blank, not half-filled', () => {
+		for (const field of AWAITING_QUESTION) {
+			assert.equal(
+				FIELD_IDS[field as keyof typeof FIELD_IDS],
+				'',
+				`${field} has an id now - remove it from AWAITING_QUESTION`,
+			);
+		}
+	});
+
 	it('no two fields share an id', () => {
-		const ids = Object.values(FIELD_IDS);
+		const ids = Object.values(FIELD_IDS).filter(Boolean);
 		assert.equal(new Set(ids).size, ids.length);
 	});
 

@@ -80,6 +80,23 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 				</label>
 			</div>
 
+			{/*
+			  Not pre-filled from the existing avatar: that is a repo path, not a URL, and
+			  showing it back would invite someone to edit it into something unfetchable.
+			  Blank means "no request", which is what most submissions are.
+			*/}
+			<label class="field avatar-field">
+				<span class="field-label">{s.avatarUrlLabel}</span>
+				<input
+					type="url"
+					name="avatar_url"
+					autocomplete="off"
+					spellcheck="false"
+					placeholder="https://..."
+				/>
+				<span class="hint">{s.avatarUrlHint}</span>
+			</label>
+
 			{slots.map((slot) => (
 				<fieldset class="slot" data-slot hidden={!slot.visible}>
 					<legend class="slot-legend">{s.scheduleSlot(slot.n)}</legend>
@@ -225,6 +242,7 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 					duration_min: value('duration'),
 					title: value('title'),
 					streams: encodeBlocks(extras),
+					avatar_url: value('avatar_url'),
 				});
 				outcome = 'sent';
 			} catch (err) {
@@ -301,7 +319,12 @@ const slots = Array.from({ length: MAX_SLOTS }, (_, i) => {
 		display: none;
 	}
 
+	.avatar-field {
+		margin-bottom: 0.9rem;
+	}
+
 	input[type='text'],
+	input[type='url'],
 	input[type='time'],
 	select {
 		font: inherit;

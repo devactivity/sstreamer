@@ -1,5 +1,6 @@
 ---
 import { t, localePath, type Lang } from '../lib/i18n';
+import { isContactConfigured } from '../lib/contact';
 
 interface Props {
 	lang: Lang;
@@ -78,6 +79,14 @@ const site = Astro.site?.origin ?? '';
 			<p>
 				{s.siteName} <span class="sep">/</span>
 				<a href="/export.csv">{s.dataExport}</a>
+				{/* Hidden until the contact form has an endpoint, so the link never leads to a
+				    page that quietly cannot send. The page itself still builds either way. */}
+				{isContactConfigured() && (
+					<>
+						<span class="sep">/</span>
+						<a href={localePath(lang, '/contact')}>{s.contact}</a>
+					</>
+				)}
 			</p>
 		</footer>
 

@@ -11,6 +11,10 @@
  * rather than pretending to send.
  */
 
+// Extension included because this module is also loaded by `node --test`, which does
+// not resolve extensionless paths. See tsconfig's allowImportingTsExtensions.
+import { postToForm, toEntries } from './form-post.ts';
+
 /** Every field the sheet understands. Keep in step with the columns in SETUP.md. */
 export type SubmitField =
 	| 'slug'
@@ -28,6 +32,13 @@ export type SubmitField =
 	| 'title'
 	/** Schedule blocks past the first, packed. See `schedule-encode.ts`. */
 	| 'streams'
+	/**
+	 * Where the streamer's picture can be fetched from. Deliberately NOT `avatar`:
+	 * the schema's `avatar` is a repo-relative path, and a URL landing there fails
+	 * the build, which fails the whole sync run for everybody. This never reaches
+	 * the YAML - it only puts the request in front of you.
+	 */
+	| 'avatar_url'
 	| 'edit_key_hash';
 
 /** The form's POST target, ending in /formResponse. */
@@ -57,6 +68,7 @@ export const FIELD_IDS: Record<SubmitField, string> = {
 	duration_min: 'entry.1360799624',
 	title: 'entry.1585455517',
 	streams: 'entry.1503661019',
+	avatar_url: 'entry.1010210650',
 	edit_key_hash: 'entry.1568322364',
 };
 
@@ -77,36 +89,19 @@ export class SubmitNotConfiguredError extends Error {
 	}
 }
 
-/**
- * Map field names onto Google's entry ids, dropping anything empty or unmapped.
- * Empty means "leave alone" on the sync side, so sending blanks would be wrong -
- * a half-filled edit form must not wipe existing data.
- */
+/** Map submission fields onto entry ids. See `toEntries` for the dropping rules. */
 export function toFormEntries(
 	fields: Partial<Record<SubmitField, string>>,
 	ids: Record<SubmitField, string> = FIELD_IDS,
 ): [string, string][] {
-	const entries: [string, string][] = [];
-	for (const [field, value] of Object.entries(fields) as [SubmitField, string | undefined][]) {
-		const id = ids[field]?.trim();
-		const trimmed = value?.trim();
-		if (id && trimmed) entries.push([id, trimmed]);
-	}
-	return entries;
+	return toEntries(fields, ids);
 }
 
 /**
- * Send a submission.
- *
- * Google Forms sends no CORS headers, so this must be a `no-cors` request and the
- * response is opaque. Resolving means the request left the browser - it does NOT
- * mean the form accepted it. Callers must word their confirmation accordingly.
+ * Send a submission. Resolving means the request left the browser, not that the form
+ * accepted it - the response is opaque. See `postToForm`.
  */
 export async function submitToForm(fields: Partial<Record<SubmitField, string>>): Promise<void> {
 	if (!isSubmitConfigured()) throw new SubmitNotConfiguredError();
-
-	const body = new FormData();
-	for (const [id, value] of toFormEntries(fields)) body.append(id, value);
-
-	await fetch(FORM_ACTION, { method: 'POST', mode: 'no-cors', body });
+	await postToForm(FORM_ACTION, toFormEntries(fields));
 }

@@ -1,0 +1,188 @@
+---
+import { t, type Lang } from '../lib/i18n';
+
+interface Props {
+	lang: Lang;
+}
+
+const { lang } = Astro.props;
+const s = t(lang);
+---
+
+<section class="contact" data-contact>
+	<h1>{s.contactTitle}</h1>
+	<p class="intro">{s.contactIntro}</p>
+
+	{/*
+	  Stated before the fields rather than after, so it is read by someone about to type
+	  their key into the message box, not by someone who already has.
+	*/}
+	<p class="warn">{s.contactWarn}</p>
+
+	<form data-form>
+		<label class="field">
+			<span class="field-label">{s.contactNameLabel}</span>
+			<input type="text" name="name" autocomplete="off" />
+			<span class="hint">{s.contactNameHint}</span>
+		</label>
+
+		<label class="field">
+			<span class="field-label">{s.contactReplyLabel}</span>
+			<input type="text" name="reply" autocomplete="off" />
+			<span class="hint">{s.contactReplyHint}</span>
+		</label>
+
+		<label class="field">
+			<span class="field-label">{s.contactMessageLabel}</span>
+			<textarea name="message" rows="6" required></textarea>
+		</label>
+
+		<button type="submit">{s.contactSubmit}</button>
+	</form>
+
+	<p class="proof">{s.contactProof}</p>
+
+	<p
+		class="pending"
+		data-pending
+		hidden
+		data-msg-preview={s.contactPreview}
+		data-msg-sent={s.contactSent}
+		data-msg-failed={s.sendFailed}
+	>
+	</p>
+</section>
+
+<script>
+	import { ContactNotConfiguredError, submitContact } from '../lib/contact';
+
+	(() => {
+		const root = document.querySelector<HTMLElement>('[data-contact]');
+		if (!root) return;
+
+		const form = root.querySelector<HTMLFormElement>('[data-form]');
+		const pending = root.querySelector<HTMLElement>('[data-pending]');
+
+		const finish = (outcome: 'sent' | 'preview' | 'failed') => {
+			if (!pending) return;
+			pending.textContent =
+				outcome === 'sent'
+					? (pending.dataset.msgSent ?? '')
+					: outcome === 'preview'
+						? (pending.dataset.msgPreview ?? '')
+						: (pending.dataset.msgFailed ?? '');
+			pending.hidden = false;
+		};
+
+		form?.addEventListener('submit', async (event) => {
+			event.preventDefault();
+			const data = new FormData(form);
+			const value = (key: string) => String(data.get(key) ?? '');
+
+			const message = value('message').trim();
+			if (!message) return;
+
+			try {
+				await submitContact({
+					name: value('name'),
+					reply: value('reply'),
+					message,
+				});
+				// Hidden only once the send resolved, so a failure leaves what they typed
+				// on screen to retry with rather than throwing it away.
+				form.hidden = true;
+				finish('sent');
+			} catch (err) {
+				if (err instanceof ContactNotConfiguredError) {
+					finish('preview');
+					return;
+				}
+				finish('failed');
+			}
+		});
+	})();
+</script>
+
+<style>
+	.contact {
+		max-width: 40rem;
+	}
+
+	.contact h1 {
+		margin: 0 0 0.4rem;
+		font-size: 1.4rem;
+	}
+
+	.intro {
+		margin: 0 0 1rem;
+		color: var(--muted);
+		font-size: 0.92rem;
+	}
+
+	.warn {
+		background: color-mix(in srgb, var(--warn) 10%, transparent);
+		border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+		border-radius: var(--radius);
+		padding: 0.7rem 0.85rem;
+		margin: 0 0 1.2rem;
+		font-size: 0.88rem;
+		font-weight: 600;
+	}
+
+	form[hidden],
+	.pending[hidden] {
+		display: none;
+	}
+
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		margin-bottom: 1rem;
+	}
+
+	.field-label {
+		font-size: 0.78rem;
+		font-weight: 600;
+		color: var(--muted);
+	}
+
+	.hint {
+		font-size: 0.8rem;
+		color: var(--muted);
+	}
+
+	input[type='text'],
+	textarea {
+		font: inherit;
+		font-size: 1rem; /* 16px stops iOS Safari zooming on focus */
+		color: var(--text);
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 0.6rem 0.7rem;
+		width: 100%;
+	}
+
+	textarea {
+		resize: vertical;
+	}
+
+	button {
+		font: inherit;
+		font-weight: 600;
+		cursor: pointer;
+		background: var(--accent);
+		color: var(--accent-fg);
+		border: 1px solid transparent;
+		border-radius: var(--radius);
+		padding: 0.6rem 1.1rem;
+	}
+
+	.proof,
+	.pending {
+		margin: 1rem 0 0;
+		font-size: 0.85rem;
+		color: var(--muted);
+	}
+</style>

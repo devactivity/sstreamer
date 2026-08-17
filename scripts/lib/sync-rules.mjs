@@ -46,7 +46,12 @@ export function submissionToPatch(row) {
 	if (row.name?.trim()) patch.name = row.name.trim();
 	if (row.bio?.trim()) patch.bio = row.bio.trim();
 	if (row.timezone?.trim()) patch.timezone = row.timezone.trim();
-	if (row.avatar?.trim()) patch.avatar = row.avatar.trim();
+
+	// `avatar` is a repo-relative path that Astro resolves at build time, so it can
+	// only ever be set by hand. Note there is deliberately no `row.avatar` here: a URL
+	// written into this field fails the build, and the sync build-verifies before
+	// committing, so one bad value would stop the run for every streamer in it.
+	// Requests arrive in `avatar_url` instead and are surfaced, never applied.
 
 	// Persist the key hash, or a created profile would have nothing to check future
 	// edits against and every one of them would queue forever. Only well-formed
@@ -110,6 +115,24 @@ export function submissionToPatch(row) {
 	return patch;
 }
 
+/**
+ * The picture a streamer asked for, if they asked for one and the value is plausibly
+ * fetchable. Only http(s) is accepted: this ends up in a log you will click, and
+ * `javascript:`, `file:` or `data:` have no business being there.
+ *
+ * Returns undefined rather than an empty string so callers can test it directly.
+ */
+export function avatarUrl(row) {
+	const raw = row.avatar_url?.trim();
+	if (!raw) return undefined;
+	try {
+		const { protocol } = new URL(raw);
+		return protocol === 'http:' || protocol === 'https:' ? raw : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** Fields in the patch that would actually change the existing record. */
 export function changedFields(existing, patch) {
 	if (!existing) return Object.keys(patch);
@@ -125,8 +148,27 @@ export function changedFields(existing, patch) {
  *   update - an edit carrying the right key, applied automatically
  *   queue  - needs your review; nothing is written
  *   skip   - nothing would change
+ *
+ * `patch` is any partial streamer record, not only what submissionToPatch produces.
+ * The protected-field check has to hold for fields no submission can currently reach,
+ * so typing it to today's output would make that guard untestable.
+ *
+ * @param {{
+ *   row: Record<string, any>,
+ *   existing?: Record<string, any> | null,
+ *   patch?: Record<string, any>,
+ * }} input
  */
 export function decideSubmission({ row, existing, patch = submissionToPatch(row) }) {
+	// Attached to whatever the row does rather than replacing it: a streamer who
+	// changes their schedule and asks for a picture in one submission should still get
+	// the schedule change, and the picture is a manual job either way. Carried out here
+	// so it survives every branch below, including `skip`, which is what a row asking
+	// for nothing but a picture would otherwise be.
+	return { ...decideAction({ row, existing, patch }), avatarRequest: avatarUrl(row) };
+}
+
+function decideAction({ row, existing, patch }) {
 	const approved = isApproved(row.approved);
 	const changed = changedFields(existing, patch);
 
