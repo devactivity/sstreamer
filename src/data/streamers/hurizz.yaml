@@ -11,7 +11,6 @@ channels:
 verified: true
 avatar: ./avatars/hurizz.png
 name: hurizz
-edit_key_hash: aad71954cc8bd37f984c03f4b11b33ba97b430b945266c5d7950f0a7a77d5c43
 updated: '2026-08-17'
 schedule:
   recurring:
@@ -23,3 +22,4 @@ schedule:
       game: pokemon-unite
       platform: tiktok
   overrides: []
+edit_key_mac: aa0d642438741d2519d307fd052812388ef710cc34f1b73ff89817c7111f1be2

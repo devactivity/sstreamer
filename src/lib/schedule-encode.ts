@@ -39,7 +39,18 @@ const DAY_SEP = ',';
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export const DEFAULT_DURATION = 120;
-const MAX_DURATION = 1440;
+export const MAX_DURATION = 1440;
+
+/**
+ * Exported so the sync validates the first schedule block by the same rule as the
+ * packed ones. The first block has its own sheet columns and used to be checked more
+ * loosely, which let a `start` of "banana" through to the schema and failed the build.
+ */
+export const isValidTime = (value: string) => TIME.test(value);
+
+/** Matches the schema: a whole number of minutes, at least one, at most a full day. */
+export const isValidDuration = (value: number) =>
+	Number.isInteger(value) && value > 0 && value <= MAX_DURATION;
 
 /**
  * Anyone can POST to the form endpoint, so cap what one cell can turn into. Well past
@@ -102,10 +113,7 @@ export function decodeBlocks(raw: string | undefined | null): ScheduleBlock[] {
 			// same instant, and sorted so the generated YAML is stable across syncs.
 			days: [...new Set(dayList)].sort((a, z) => dayOrder(a) - dayOrder(z)),
 			start,
-			duration_min:
-				Number.isInteger(minutes) && minutes > 0 && minutes <= MAX_DURATION
-					? minutes
-					: DEFAULT_DURATION,
+			duration_min: isValidDuration(minutes) ? minutes : DEFAULT_DURATION,
 			// An unrecognised platform falls back to inheriting rather than dropping the
 			// block: the schedule is the point, and a bad platform would fail the schema
 			// and take the whole sync run down with it.

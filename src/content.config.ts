@@ -1,7 +1,7 @@
 import { defineCollection, reference } from 'astro:content';
 import { glob } from 'astro/loaders';
 import { z } from 'astro/zod';
-import { PLATFORMS, DAYS, TIMEZONES } from './lib/constants';
+import { PLATFORMS, DAYS, TIMEZONES, MAX_BIO_LENGTH } from './lib/constants';
 
 const games = defineCollection({
 	loader: glob({ pattern: '**/*.{yaml,yml}', base: './src/data/games' }),
@@ -66,7 +66,7 @@ const streamers = defineCollection({
 			name: z.string().min(1),
 			/** Other names people search for: old handles, real name, romanised spellings. */
 			aliases: z.array(z.string()).default([]),
-			bio: z.string().max(280).optional(),
+			bio: z.string().max(MAX_BIO_LENGTH).optional(),
 			/**
 			 * Profile picture. Saved into src/data/streamers/avatars/ at moderation time
 			 * from the URL the streamer submits, so nothing hotlinks to a platform CDN.
@@ -86,13 +86,15 @@ const streamers = defineCollection({
 			/** Set by hand after the owner proves control of the channel. */
 			verified: z.boolean().default(false),
 			/**
-			 * SHA-256 of the streamer's edit key. The key itself is generated in their
-			 * browser, shown once, and never transmitted - only this hash is. Public,
-			 * since the repo is; 128 bits of entropy is what keeps that safe.
+			 * HMAC-SHA256 of the hash of the streamer's edit key, under a pepper held
+			 * only in Actions secrets. Deliberately not the hash itself: the browser
+			 * authenticates by sending that hash, and this repo is public, so storing it
+			 * here would publish the credential for anyone to post back. See
+			 * `editKeyMac` in scripts/lib/sync-rules.mjs.
 			 */
-			edit_key_hash: z
+			edit_key_mac: z
 				.string()
-				.regex(/^[0-9a-f]{64}$/, 'Harus SHA-256 hex huruf kecil')
+				.regex(/^[0-9a-f]{64}$/, 'Harus HMAC-SHA256 hex huruf kecil')
 				.optional(),
 			/** Bumped every time a submission is approved. Drives the staleness badge. */
 			updated: isoDate,

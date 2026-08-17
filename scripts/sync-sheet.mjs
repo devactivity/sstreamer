@@ -23,6 +23,7 @@ import {
 	STREAMER_DIR,
 	ensureStreamerDir,
 	readStreamers,
+	readGameSlugs,
 	toYaml,
 	normaliseDates,
 } from './lib/streamer-io.mjs';
@@ -144,6 +145,18 @@ console.log(`read ${rows.length} submission row(s) from ${range}`);
 
 // Latest state per slug, so several submissions in one run apply in order.
 const current = new Map(readStreamers().map((s) => [s.slug, s.data]));
+
+// Read once rather than per row. A submission naming a game with no file would fail
+// the schema, and the build step below turns that into a failed run for everybody.
+const knownGames = readGameSlugs();
+
+/**
+ * Secret behind the stored edit key MACs. Fatal when missing rather than degraded:
+ * without it no key can be verified, so every edit would silently start queueing and
+ * every new profile would be created with no key on record at all - which looks like
+ * the sync working right up until nobody can edit anything.
+ */
+const pepper = process.env.EDIT_KEY_PEPPER || fail('EDIT_KEY_PEPPER is not set');
 const today = new Date().toISOString().slice(0, 10);
 const writes = new Map();
 const queued = [];
@@ -159,8 +172,14 @@ for (const [i, row] of rows.entries()) {
 	}
 
 	const existing = writes.get(slug) ?? current.get(slug) ?? null;
-	const patch = submissionToPatch(row);
-	const { action, reason, changed, avatarRequest } = decideSubmission({ row, existing, patch });
+	const patch = submissionToPatch(row, pepper);
+	const { action, reason, changed, avatarRequest } = decideSubmission({
+		row,
+		existing,
+		patch,
+		knownGames,
+		pepper,
+	});
 
 	// Collected before the action is handled, so a row whose only content is a picture
 	// request still reports rather than vanishing into the `skip` count.

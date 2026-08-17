@@ -9,12 +9,26 @@ import {
 	applyPatch,
 	avatarUrl,
 	dropsChannel,
+	editKeyMac,
+	patchProblems,
 	KEY_PROTECTED_FIELDS,
 } from '../scripts/lib/sync-rules.mjs';
 import { encodeChannels } from '../src/lib/channel-encode.ts';
 
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
+
+/**
+ * What a streamer's browser sends is still the hash; what the repo stores is the MAC.
+ * Tests keep both straight because confusing them is exactly the bug this scheme fixes:
+ * `row.edit_key_hash` is submitted, `existing.edit_key_mac` is published.
+ */
+const PEPPER = 'test-pepper';
+const MAC_A = editKeyMac(PEPPER, HASH_A);
+
+/** decideSubmission with the pepper already supplied, since every call needs it. */
+const decide = (input: Parameters<typeof decideSubmission>[0]) =>
+	decideSubmission({ pepper: PEPPER, ...input });
 
 describe('slugify', () => {
 	it('lowercases and hyphenates', () => assert.equal(slugify('Rizky Plays'), 'rizky-plays'));
@@ -247,23 +261,58 @@ describe('submissionToPatch', () => {
 
 	// Without this the created profile stores no key, and every later edit is
 	// rejected with "profile has no key on record" - the feature dies silently.
-	it('persists a well-formed edit key hash', () =>
-		assert.equal(submissionToPatch({ edit_key_hash: HASH_A }).edit_key_hash, HASH_A));
+	it('persists a well-formed edit key', () =>
+		assert.equal(submissionToPatch({ edit_key_hash: HASH_A }, PEPPER).edit_key_mac, MAC_A));
 
-	it('lowercases the stored hash so comparisons are stable', () =>
+	/**
+	 * The reason this scheme exists. This repo is public and the browser authenticates
+	 * by sending the hash, so storing that same hash here would publish the credential:
+	 * anyone could read it off GitHub and post it back as a valid edit.
+	 */
+	it('never stores the submitted hash itself', () => {
+		const patch = submissionToPatch({ edit_key_hash: HASH_A }, PEPPER);
+		// Cast because the inferred shape has no such key, which is itself the proof.
+		// Asserted at runtime as well, so loosening the types cannot quietly undo it.
 		assert.equal(
-			submissionToPatch({ edit_key_hash: HASH_A.toUpperCase() }).edit_key_hash,
-			HASH_A,
+			(patch as unknown as Record<string, unknown>).edit_key_hash,
+			undefined,
+			'the raw hash must not be in the patch',
+		);
+		assert.notEqual(patch.edit_key_mac, HASH_A);
+		assert.match(patch.edit_key_mac, /^[0-9a-f]{64}$/);
+	});
+
+	it('gives different peppers different MACs for the same key', () =>
+		assert.notEqual(
+			submissionToPatch({ edit_key_hash: HASH_A }, 'one').edit_key_mac,
+			submissionToPatch({ edit_key_hash: HASH_A }, 'two').edit_key_mac,
+		));
+
+	it('normalises case before peppering, so comparisons are stable', () =>
+		assert.equal(
+			submissionToPatch({ edit_key_hash: HASH_A.toUpperCase() }, PEPPER).edit_key_mac,
+			MAC_A,
 		));
 
 	it('drops a malformed hash rather than breaking the schema', () => {
 		for (const bad of ['', '   ', 'not-a-hash', 'abc123', 'z'.repeat(64), HASH_A.slice(0, 63)]) {
 			assert.equal(
-				submissionToPatch({ edit_key_hash: bad }).edit_key_hash,
+				submissionToPatch({ edit_key_hash: bad }, PEPPER).edit_key_mac,
 				undefined,
 				`should have rejected ${JSON.stringify(bad)}`,
 			);
 		}
+	});
+
+	/**
+	 * Fail safe rather than fail open. If the pepper is ever missing the key is left out
+	 * entirely, so edits queue for a human; storing it raw instead would quietly put the
+	 * credential back in the public repo, which is the failure nobody would notice.
+	 */
+	it('stores no key at all when there is no pepper', () => {
+		const patch = submissionToPatch({ edit_key_hash: HASH_A });
+		assert.equal(patch.edit_key_mac, undefined);
+		assert.equal((patch as unknown as Record<string, unknown>).edit_key_hash, undefined);
 	});
 });
 
@@ -313,10 +362,10 @@ describe('changedFields', () => {
 });
 
 describe('decideSubmission', () => {
-	const existing = { name: 'Rizky', edit_key_hash: HASH_A, bio: 'old' };
+	const existing = { name: 'Rizky', edit_key_mac: MAC_A, bio: 'old' };
 
 	it('auto-applies an edit with a matching key', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: { edit_key_hash: HASH_A, bio: 'new bio' },
 			existing,
 		});
@@ -324,13 +373,13 @@ describe('decideSubmission', () => {
 	});
 
 	it('queues an edit with a wrong key', () => {
-		const d = decideSubmission({ row: { edit_key_hash: HASH_B, bio: 'new' }, existing });
+		const d = decide({ row: { edit_key_hash: HASH_B, bio: 'new' }, existing });
 		assert.equal(d.action, 'queue');
 		assert.match(d.reason, /does not match/);
 	});
 
 	it('is case-insensitive about the submitted hash', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: { edit_key_hash: HASH_A.toUpperCase(), bio: 'new' },
 			existing,
 		});
@@ -338,13 +387,13 @@ describe('decideSubmission', () => {
 	});
 
 	it('queues an edit with no key at all', () => {
-		const d = decideSubmission({ row: { bio: 'new' }, existing });
+		const d = decide({ row: { bio: 'new' }, existing });
 		assert.equal(d.action, 'queue');
 		assert.match(d.reason, /no edit key/);
 	});
 
 	it('queues when the profile has no key on record', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: { edit_key_hash: HASH_A, bio: 'new' },
 			existing: { name: 'Rizky', bio: 'old' },
 		});
@@ -353,13 +402,13 @@ describe('decideSubmission', () => {
 	});
 
 	it('queues a new profile even though nothing is wrong with it', () => {
-		const d = decideSubmission({ row: { name: 'Baru', edit_key_hash: HASH_A }, existing: null });
+		const d = decide({ row: { name: 'Baru', edit_key_hash: HASH_A }, existing: null });
 		assert.equal(d.action, 'queue');
 		assert.match(d.reason, /needs approval/);
 	});
 
 	it('creates a new profile once approved in the sheet', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: { name: 'Baru', edit_key_hash: HASH_A, approved: 'yes' },
 			existing: null,
 		});
@@ -367,7 +416,7 @@ describe('decideSubmission', () => {
 	});
 
 	it('queues a rename even with a valid key', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: { edit_key_hash: HASH_A, name: 'Someone Else' },
 			existing,
 		});
@@ -380,7 +429,7 @@ describe('decideSubmission', () => {
 	// here. The guard stays as defence in depth: it is what would have to hold if an
 	// avatar intake is ever added, and it should not quietly rot in the meantime.
 	it('queues an avatar swap even with a valid key', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: { edit_key_hash: HASH_A },
 			existing,
 			patch: { avatar: './avatars/other.png' },
@@ -390,7 +439,7 @@ describe('decideSubmission', () => {
 	});
 
 	it('lets an explicit approval override a bad key', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: { edit_key_hash: HASH_B, name: 'Renamed', approved: 'true' },
 			existing,
 		});
@@ -399,7 +448,7 @@ describe('decideSubmission', () => {
 	});
 
 	it('skips a resubmission that changes nothing', () => {
-		const d = decideSubmission({ row: { edit_key_hash: HASH_A, bio: 'old' }, existing });
+		const d = decide({ row: { edit_key_hash: HASH_A, bio: 'old' }, existing });
 		assert.equal(d.action, 'skip');
 	});
 
@@ -407,7 +456,7 @@ describe('decideSubmission', () => {
 	// If the request did not survive that branch, it would never be reported and the
 	// streamer would be waiting on something nobody ever saw.
 	it('reports a picture request even on a row that changes nothing else', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: { edit_key_hash: HASH_A, bio: 'old', avatar_url: 'https://example.com/x.png' },
 			existing,
 		});
@@ -416,7 +465,7 @@ describe('decideSubmission', () => {
 	});
 
 	it('carries a picture request through without blocking the edit it came with', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: { edit_key_hash: HASH_A, bio: 'new bio', avatar_url: 'https://example.com/x.png' },
 			existing,
 		});
@@ -427,7 +476,7 @@ describe('decideSubmission', () => {
 
 	it('leaves avatarRequest undefined when none was asked for', () =>
 		assert.equal(
-			decideSubmission({ row: { edit_key_hash: HASH_A, bio: 'new' }, existing }).avatarRequest,
+			decide({ row: { edit_key_hash: HASH_A, bio: 'new' }, existing }).avatarRequest,
 			undefined,
 		));
 });
@@ -450,37 +499,250 @@ describe('full lifecycle: create then edit with the same key', () => {
 	};
 
 	it('row 1 creates the profile and stores the key', () => {
-		const d = decideSubmission({ row: step1, existing: null });
+		const d = decide({ row: step1, existing: null });
 		assert.equal(d.action, 'create');
-		const created = applyPatch(null, submissionToPatch(step1), '2026-08-14');
-		assert.equal(created.edit_key_hash, HASH_A);
+		const created = applyPatch(null, submissionToPatch(step1, PEPPER), '2026-08-14');
+		assert.equal(created.edit_key_mac, MAC_A);
+		assert.equal(created.edit_key_hash, undefined, 'the raw hash must never be written');
 	});
 
 	it('row 2 applies automatically against the stored key, without approval', () => {
-		const created = applyPatch(null, submissionToPatch(step1), '2026-08-14');
-		const d = decideSubmission({ row: { ...step2, approved: '' }, existing: created });
+		const created = applyPatch(null, submissionToPatch(step1, PEPPER), '2026-08-14');
+		const d = decide({ row: { ...step2, approved: '' }, existing: created });
 		assert.equal(d.action, 'update');
 		assert.match(d.reason, /valid edit key/);
 	});
 
 	it('a later edit with the same key also applies automatically', () => {
-		const created = applyPatch(null, submissionToPatch(step1), '2026-08-14');
-		const filled = applyPatch(created, submissionToPatch(step2), '2026-08-14');
+		const created = applyPatch(null, submissionToPatch(step1, PEPPER), '2026-08-14');
+		const filled = applyPatch(created, submissionToPatch(step2, PEPPER), '2026-08-14');
 		const laterEdit = { slug: 'hurizz', edit_key_hash: HASH_A, start: '20:00', days: 'mon' };
 
-		const d = decideSubmission({ row: laterEdit, existing: filled });
+		const d = decide({ row: laterEdit, existing: filled });
 		assert.equal(d.action, 'update');
 		assert.equal(filled.channels[0].handle, 'hurizzgaming', 'earlier data survives');
 	});
 
 	it('a stranger with the wrong key still cannot edit it', () => {
-		const created = applyPatch(null, submissionToPatch(step1), '2026-08-14');
-		const d = decideSubmission({
+		const created = applyPatch(null, submissionToPatch(step1, PEPPER), '2026-08-14');
+		const d = decide({
 			row: { slug: 'hurizz', edit_key_hash: HASH_B, start: '03:00' },
 			existing: created,
 		});
 		assert.equal(d.action, 'queue');
 		assert.match(d.reason, /does not match/);
+	});
+});
+
+describe('patchProblems', () => {
+	const games = new Set(['valorant', 'pokemon-unite']);
+	const ok = (patch: Record<string, unknown>) =>
+		assert.deepEqual(patchProblems(patch, games), [], JSON.stringify(patch));
+	const bad = (patch: Record<string, unknown>, match: RegExp) => {
+		const problems = patchProblems(patch, games);
+		assert.equal(problems.length > 0, true, `expected a problem for ${JSON.stringify(patch)}`);
+		assert.match(problems.join('; '), match);
+	};
+
+	it('passes a patch the schema would accept', () =>
+		ok({
+			name: 'Hurizz',
+			bio: 'halo',
+			timezone: 'Asia/Jakarta',
+			games: ['valorant'],
+			channels: [{ platform: 'tiktok', handle: 'x' }],
+			schedule: {
+				recurring: [{ days: ['sat'], start: '12:00', duration_min: 120, platform: 'twitch' }],
+				overrides: [],
+			},
+		}));
+
+	it('passes an empty patch', () => ok({}));
+
+	it('catches a timezone outside the enum', () => bad({ timezone: 'Mars/Olympus' }, /timezone/));
+	it('catches a bio over the limit', () => bad({ bio: 'x'.repeat(281) }, /281 characters/));
+	it('allows a bio exactly at the limit', () => ok({ bio: 'x'.repeat(280) }));
+	it('catches a game with no file', () => bad({ games: ['nope'] }, /no game file for: nope/));
+	it('catches a platform outside the enum', () =>
+		bad({ channels: [{ platform: 'kick', handle: 'x' }] }, /platform "kick"/));
+
+	const block = (over: Record<string, unknown>) => ({
+		schedule: { recurring: [{ days: ['sat'], start: '12:00', duration_min: 120, ...over }] },
+	});
+
+	it('catches a day outside the enum', () => bad(block({ days: ['funday'] }), /not a day: funday/));
+	it('catches a start that is not HH:MM', () => bad(block({ start: 'banana' }), /is not HH:MM/));
+	it('catches a fractional duration', () => bad(block({ duration_min: 1.5 }), /duration 1\.5/));
+	it('catches a duration over a day', () => bad(block({ duration_min: 99999 }), /duration 99999/));
+	it('allows a duration exactly at the limit', () => ok(block({ duration_min: 1440 })));
+	it('catches a per-block platform outside the enum', () =>
+		bad(block({ platform: 'kick' }), /schedule 1: platform "kick"/));
+
+	it('names which schedule is wrong when there are several', () =>
+		bad(
+			{
+				schedule: {
+					recurring: [
+						{ days: ['sat'], start: '12:00', duration_min: 120 },
+						{ days: ['sun'], start: 'nope', duration_min: 120 },
+					],
+				},
+			},
+			/schedule 2: start/,
+		));
+
+	it('reports every problem at once, not just the first', () => {
+		const problems = patchProblems({ timezone: 'Mars/Olympus', bio: 'x'.repeat(300) }, games);
+		assert.equal(problems.length, 2);
+	});
+
+	// The sync always passes the set. Callers that have no repo to read skip only this
+	// one check rather than losing the rest.
+	it('skips only the games check when no game list is given', () => {
+		assert.deepEqual(patchProblems({ games: ['nope'] }, undefined), []);
+		assert.equal(patchProblems({ games: ['nope'], timezone: 'Mars' }, undefined).length, 1);
+	});
+});
+
+describe('a row that would not build', () => {
+	const games = new Set(['valorant']);
+
+	/**
+	 * The whole point. The sync writes every file, then builds, then commits, so one
+	 * value the schema refuses fails the run - taking every good submission with it -
+	 * and fails again every 15 minutes until someone finds the row.
+	 */
+	it('queues instead of being written', () => {
+		const d = decide({
+			row: { name: 'X', slug: 'x', timezone: 'Mars/Olympus' },
+			existing: null,
+			knownGames: games,
+		});
+		assert.equal(d.action, 'queue');
+		assert.match(d.reason, /would not build: timezone/);
+	});
+
+	/**
+	 * Ticking `approved` says "I vouch for this person", not "write data the schema
+	 * refuses". A bad row breaks the run just as thoroughly when it was let through on
+	 * purpose, so this check sits ahead of the approval shortcut.
+	 */
+	it('queues even when approved is ticked', () => {
+		const d = decide({
+			row: { name: 'X', slug: 'x', approved: 'ya', bio: 'x'.repeat(500) },
+			existing: null,
+			knownGames: games,
+		});
+		assert.equal(d.action, 'queue');
+		assert.match(d.reason, /would not build: bio/);
+	});
+
+	it('queues even when the edit key is valid', () => {
+		const d = decide({
+			row: { slug: 'x', edit_key_hash: HASH_A, games: 'no-such-game' },
+			existing: { name: 'X', edit_key_mac: MAC_A },
+			knownGames: games,
+		});
+		assert.equal(d.action, 'queue');
+		assert.match(d.reason, /would not build: no game file/);
+	});
+
+	it('still reports a picture request from an otherwise unbuildable row', () =>
+		assert.equal(
+			decide({
+				row: { name: 'X', timezone: 'Mars/Olympus', avatar_url: 'https://example.com/a.png' },
+				existing: null,
+				knownGames: games,
+			}).avatarRequest,
+			'https://example.com/a.png',
+		));
+
+	it('lets a good row through untouched', () => {
+		const d = decide({
+			row: { name: 'X', slug: 'x', approved: 'ya', games: 'valorant', timezone: 'Asia/Jakarta' },
+			existing: null,
+			knownGames: games,
+		});
+		assert.equal(d.action, 'create');
+	});
+
+	// Uppercase reaches the schema as-is from the first block's own column, while the
+	// packed column lowercases. They must agree or one form of the same input queues.
+	it('normalises a day submitted in the wrong case rather than queueing it', () => {
+		const patch = submissionToPatch({ days: 'MON|Tue', start: '20:00' });
+		assert.deepEqual(patch.schedule.recurring[0].days, ['mon', 'tue']);
+		assert.deepEqual(patchProblems(patch, games), []);
+	});
+});
+
+describe('the published value cannot be replayed', () => {
+	/**
+	 * The attack this scheme exists to stop, spelled out.
+	 *
+	 * Before peppering, what the repo published was the same value the browser submits.
+	 * Anyone could read a streamer's `edit_key_hash` from raw.githubusercontent.com and
+	 * post it straight to the public form endpoint, and the sync would call it a valid
+	 * key. The 128 bits of entropy in the key never mattered, because nobody needed the
+	 * key - only the hash of it, which was on GitHub.
+	 */
+	const published = applyPatch(
+		null,
+		submissionToPatch({ name: 'Hurizz', edit_key_hash: HASH_A }, PEPPER),
+		'2026-08-14',
+	);
+
+	it('publishes something the streamer never submits', () =>
+		assert.notEqual(published.edit_key_mac, HASH_A));
+
+	it('rejects an edit that submits the published value back', () => {
+		const d = decide({
+			row: { slug: 'hurizz', edit_key_hash: published.edit_key_mac, bio: 'pwned' },
+			existing: published,
+		});
+		assert.equal(d.action, 'queue');
+		assert.match(d.reason, /does not match/);
+	});
+
+	it('still accepts the real key', () => {
+		const d = decide({
+			row: { slug: 'hurizz', edit_key_hash: HASH_A, bio: 'new bio' },
+			existing: published,
+		});
+		assert.equal(d.action, 'update');
+	});
+
+	// Knowing the MAC is not enough; forging one needs the pepper, which lives only in
+	// Actions secrets.
+	it('rejects an edit peppered with the wrong secret', () => {
+		const d = decide({
+			row: { slug: 'hurizz', edit_key_hash: editKeyMac('wrong-pepper', HASH_A), bio: 'x' },
+			existing: published,
+		});
+		assert.equal(d.action, 'queue');
+		assert.match(d.reason, /does not match/);
+	});
+
+	/**
+	 * Fail safe rather than fail open, again. Comparing raw values when the pepper is
+	 * absent would accept exactly the replay above, and it would do it silently.
+	 */
+	it('refuses to verify anything without a pepper', () => {
+		const d = decideSubmission({
+			row: { slug: 'hurizz', edit_key_hash: HASH_A, bio: 'new' },
+			existing: published,
+			patch: { bio: 'new' },
+		});
+		assert.equal(d.action, 'queue');
+		assert.match(d.reason, /no pepper configured/);
+	});
+
+	it('queues a profile that has no MAC on record', () => {
+		const d = decide({
+			row: { slug: 'old', edit_key_hash: HASH_A, bio: 'new' },
+			existing: { name: 'Old', bio: 'was' },
+		});
+		assert.equal(d.action, 'queue');
+		assert.match(d.reason, /no key on record/);
 	});
 });
 
@@ -532,7 +794,7 @@ describe('dropsChannel', () => {
 describe('channel changes under a valid key', () => {
 	const existing = {
 		name: 'Hurizz',
-		edit_key_hash: HASH_A,
+		edit_key_mac: MAC_A,
 		channels: [
 			{ platform: 'tiktok', handle: 'hurizzgaming', primary: true },
 			{ platform: 'youtube', handle: '@hurizz', primary: false },
@@ -546,7 +808,7 @@ describe('channel changes under a valid key', () => {
 	 * second channel was gone with nothing to notice.
 	 */
 	it('queues an edit that would delete a channel the form did not know about', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: {
 				slug: 'hurizz',
 				edit_key_hash: HASH_A,
@@ -562,7 +824,7 @@ describe('channel changes under a valid key', () => {
 	});
 
 	it('applies an edit that keeps every channel and adds one', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: {
 				slug: 'hurizz',
 				edit_key_hash: HASH_A,
@@ -577,7 +839,7 @@ describe('channel changes under a valid key', () => {
 	});
 
 	it('queues an edit that repoints a channel at another account', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: {
 				slug: 'hurizz',
 				edit_key_hash: HASH_A,
@@ -594,14 +856,14 @@ describe('channel changes under a valid key', () => {
 	// Adding the first channel to a profile that has none is how ClaimForm's second
 	// step works, and it must not need a human.
 	it('applies the first channel on a profile that had none', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: {
 				slug: 'baru',
 				edit_key_hash: HASH_A,
 				platform: 'tiktok',
 				handle: 'baru',
 			},
-			existing: { name: 'Baru', edit_key_hash: HASH_A, channels: [] },
+			existing: { name: 'Baru', edit_key_mac: MAC_A, channels: [] },
 		});
 		assert.equal(d.action, 'update');
 	});
@@ -630,7 +892,7 @@ describe('channel changes under a valid key', () => {
 	});
 
 	it('still lets an explicit approval through', () => {
-		const d = decideSubmission({
+		const d = decide({
 			row: {
 				slug: 'hurizz',
 				approved: 'ya',

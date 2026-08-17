@@ -41,6 +41,9 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
           SHEET_RANGE: ${{ vars.SHEET_RANGE }}
+          # Without this the sync refuses to run rather than storing edit keys in a
+          # form that can be read off the public repo and replayed. See SETUP.md.
+          EDIT_KEY_PEPPER: ${{ secrets.EDIT_KEY_PEPPER }}
         run: node scripts/sync-sheet.mjs ${{ inputs.dry_run && '--dry-run' || '' }}
 
       # Validates the incoming data against the Zod schema. A malformed submission

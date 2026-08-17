@@ -7,6 +7,36 @@
  * anyone can POST straight to the form endpoint and skip the page's JavaScript.
  */
 
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+/**
+ * What gets stored in the repo in place of the submitted hash.
+ *
+ * The repo is public, and the browser authenticates by sending the hash of the key,
+ * not the key itself. So storing that hash published the credential: anyone could read
+ * it off GitHub and post it back to the form endpoint as a valid edit. The 128 bits of
+ * entropy in the key were never the thing standing in the way, because nobody needed
+ * the key.
+ *
+ * HMAC with a pepper held only in GitHub Actions secrets breaks that. What is published
+ * is no longer what gets submitted, and deriving one from the other needs the pepper.
+ * The sheet still holds the submitted hashes, privately, which is also what makes
+ * rotating the pepper possible.
+ *
+ * Stored under `edit_key_mac`, not `edit_key_hash`, so a peppered value can never be
+ * mistaken for a raw one - by the migration, or by a human reading a YAML file.
+ */
+export function editKeyMac(pepper, hash) {
+	return createHmac('sha256', pepper).update(String(hash).trim().toLowerCase()).digest('hex');
+}
+
+/** Constant time, since a mismatch here is the whole authentication decision. */
+function macsMatch(a, b) {
+	const left = Buffer.from(String(a), 'utf8');
+	const right = Buffer.from(String(b), 'utf8');
+	return left.length === right.length && timingSafeEqual(left, right);
+}
+
 /**
  * Changes to these still queue for review even with a valid key. They are the
  * impersonation-sensitive fields: a stolen or shared key shouldn't be able to
@@ -53,8 +83,69 @@ export { slugify } from '../../src/lib/text.ts';
 
 // Same reason: the browser encodes extra schedule blocks, this decodes them, and a
 // divergent format would drop schedules without any error to notice.
-import { DEFAULT_DURATION, decodeBlocks } from '../../src/lib/schedule-encode.ts';
+import {
+	DEFAULT_DURATION,
+	decodeBlocks,
+	isValidDuration,
+	isValidTime,
+} from '../../src/lib/schedule-encode.ts';
 import { decodeChannels } from '../../src/lib/channel-encode.ts';
+import { DAYS, PLATFORMS, TIMEZONES, MAX_BIO_LENGTH } from '../../src/lib/constants.ts';
+
+/**
+ * Everything wrong with a patch that the Zod schema would reject at build time.
+ *
+ * This exists because of how the sync fails. It writes every file, then builds, then
+ * commits, so a value the schema refuses fails the build - which fails the entire run,
+ * including every good submission in it, and keeps failing every 15 minutes until
+ * someone finds the row by hand. Catching it here turns that into one queued line in
+ * the log.
+ *
+ * Checked against the patch rather than the row, so it covers the packed columns too:
+ * whatever ends up here is exactly what would be written.
+ *
+ * `knownGames` is a Set of existing game slugs. Omitted, the games check is skipped,
+ * which is only for callers that have no repo to read - the sync always passes it.
+ */
+export function patchProblems(patch, knownGames) {
+	const problems = [];
+
+	if (patch.timezone !== undefined && !TIMEZONES.includes(patch.timezone)) {
+		problems.push(`timezone "${patch.timezone}" is not one of ${TIMEZONES.join(', ')}`);
+	}
+
+	if (patch.bio !== undefined && patch.bio.length > MAX_BIO_LENGTH) {
+		problems.push(`bio is ${patch.bio.length} characters, over the ${MAX_BIO_LENGTH} limit`);
+	}
+
+	if (knownGames && patch.games) {
+		const unknown = patch.games.filter((g) => !knownGames.has(g));
+		if (unknown.length > 0) {
+			problems.push(`no game file for: ${unknown.join(', ')}`);
+		}
+	}
+
+	for (const channel of patch.channels ?? []) {
+		if (!PLATFORMS.includes(channel.platform)) {
+			problems.push(`platform "${channel.platform}" is not one of ${PLATFORMS.join(', ')}`);
+		}
+	}
+
+	for (const [i, block] of (patch.schedule?.recurring ?? []).entries()) {
+		const where = `schedule ${i + 1}`;
+		const badDays = block.days.filter((d) => !DAYS.includes(d));
+		if (badDays.length > 0) problems.push(`${where}: not a day: ${badDays.join(', ')}`);
+		if (!isValidTime(block.start)) problems.push(`${where}: start "${block.start}" is not HH:MM`);
+		if (!isValidDuration(block.duration_min)) {
+			problems.push(`${where}: duration ${block.duration_min} is not 1 to 1440 whole minutes`);
+		}
+		if (block.platform !== undefined && !PLATFORMS.includes(block.platform)) {
+			problems.push(`${where}: platform "${block.platform}" is not a known platform`);
+		}
+	}
+
+	return problems;
+}
 
 const splitList = (value) =>
 	String(value ?? '')
@@ -66,8 +157,13 @@ const splitList = (value) =>
  * Turn one submission row into a partial streamer record. Only keys the submitter
  * actually filled in are present, so a blank field means "leave alone" rather than
  * "clear it" - otherwise a half-filled edit form would wipe existing data.
+ *
+ * `pepper` is the secret behind `editKeyMac`. Without one the key is left out of the
+ * patch entirely rather than stored raw: a profile with no MAC on record simply has
+ * every later edit queued for review, which is a nuisance, where silently publishing
+ * the credential again would not be.
  */
-export function submissionToPatch(row) {
+export function submissionToPatch(row, pepper) {
 	const patch = {};
 
 	if (row.name?.trim()) patch.name = row.name.trim();
@@ -80,11 +176,14 @@ export function submissionToPatch(row) {
 	// committing, so one bad value would stop the run for every streamer in it.
 	// Requests arrive in `avatar_url` instead and are surfaced, never applied.
 
-	// Persist the key hash, or a created profile would have nothing to check future
-	// edits against and every one of them would queue forever. Only well-formed
-	// hashes are stored: garbage here would fail the Zod schema and break the build.
+	// Persist the key, or a created profile would have nothing to check future edits
+	// against and every one of them would queue forever. Stored peppered, never raw:
+	// see editKeyMac. Only well-formed hashes are accepted, since garbage here would
+	// pepper into a plausible-looking MAC that could never match anything.
 	const keyHash = row.edit_key_hash?.trim().toLowerCase();
-	if (keyHash && /^[0-9a-f]{64}$/.test(keyHash)) patch.edit_key_hash = keyHash;
+	if (pepper && keyHash && /^[0-9a-f]{64}$/.test(keyHash)) {
+		patch.edit_key_mac = editKeyMac(pepper, keyHash);
+	}
 
 	const aliases = splitList(row.aliases);
 	if (aliases.length > 0) patch.aliases = aliases;
@@ -121,7 +220,11 @@ export function submissionToPatch(row) {
 
 	// The first block has its own columns, kept as-is so no existing form question or
 	// entry id has to change. Everything after it arrives packed in one column.
-	const days = splitList(row.days);
+	//
+	// Lowercased to match what decodeBlocks does to the packed blocks. Without it a
+	// submission saying "Mon" would queue as an unknown day while the identical value
+	// in the packed column sailed through.
+	const days = splitList(row.days).map((d) => d.toLowerCase());
 	if (days.length > 0 && row.start?.trim()) {
 		const duration = Number(row.duration_min);
 		// Built in one literal rather than assigned piecemeal, so the inferred shape
@@ -129,8 +232,11 @@ export function submissionToPatch(row) {
 		recurring.push({
 			days,
 			start: row.start.trim(),
-			duration_min:
-				Number.isFinite(duration) && duration > 0 ? duration : DEFAULT_DURATION,
+			// Same rule as the packed blocks, which fall back rather than reject: a
+			// duration is the one field with a sensible default, so a bad one is not
+			// worth making someone review. The old check accepted 1.5 and 99999, both
+			// of which the schema refuses.
+			duration_min: isValidDuration(duration) ? duration : DEFAULT_DURATION,
 			...(row.title?.trim() ? { title: row.title.trim() } : {}),
 			...(row.game?.trim() ? { game: row.game.trim() } : {}),
 			...(platform ? { platform } : {}),
@@ -207,23 +313,45 @@ export function changedFields(existing, patch) {
  *   row: Record<string, any>,
  *   existing?: Record<string, any> | null,
  *   patch?: Record<string, any>,
+ *   knownGames?: Set<string>,
+ *   pepper?: string,
  * }} input
  */
-export function decideSubmission({ row, existing, patch = submissionToPatch(row) }) {
+export function decideSubmission({
+	row,
+	existing,
+	pepper,
+	patch = submissionToPatch(row, pepper),
+	knownGames,
+}) {
 	// Attached to whatever the row does rather than replacing it: a streamer who
 	// changes their schedule and asks for a picture in one submission should still get
 	// the schedule change, and the picture is a manual job either way. Carried out here
 	// so it survives every branch below, including `skip`, which is what a row asking
 	// for nothing but a picture would otherwise be.
-	return { ...decideAction({ row, existing, patch }), avatarRequest: avatarUrl(row) };
+	return {
+		...decideAction({ row, existing, patch, knownGames, pepper }),
+		avatarRequest: avatarUrl(row),
+	};
 }
 
-function decideAction({ row, existing, patch }) {
+function decideAction({ row, existing, patch, knownGames, pepper }) {
 	const approved = isApproved(row.approved);
 	const changed = changedFields(existing, patch);
 
 	if (changed.length === 0 && existing) {
 		return { action: 'skip', reason: 'no change', changed };
+	}
+
+	/**
+	 * Checked before the approval tick, deliberately. Ticking `approved` says "I vouch
+	 * for this person", not "write data the schema refuses" - and a row that cannot
+	 * build is exactly as fatal to the run whether or not you meant to let it through.
+	 * Writing it would break the sync until you noticed and untick.
+	 */
+	const problems = patchProblems(patch, knownGames);
+	if (problems.length > 0) {
+		return { action: 'queue', reason: `would not build: ${problems.join('; ')}`, changed };
 	}
 
 	// An explicit tick in the sheet is you overriding everything below.
@@ -241,11 +369,20 @@ function decideAction({ row, existing, patch }) {
 		return { action: 'queue', reason: 'no edit key supplied', changed };
 	}
 
-	if (!existing.edit_key_hash) {
+	if (!existing.edit_key_mac) {
+		// Either a profile created before peppering existed, or one created while the
+		// pepper was missing. Both need a human rather than a guess.
 		return { action: 'queue', reason: 'profile has no key on record', changed };
 	}
 
-	if (row.edit_key_hash.trim().toLowerCase() !== existing.edit_key_hash.toLowerCase()) {
+	// No pepper means the submitted hash cannot be turned into a MAC to compare, so
+	// nothing can be authenticated. Queue rather than fall back to comparing raw
+	// values, which would accept exactly the replay this scheme exists to stop.
+	if (!pepper) {
+		return { action: 'queue', reason: 'no pepper configured, cannot verify the key', changed };
+	}
+
+	if (!macsMatch(editKeyMac(pepper, row.edit_key_hash), existing.edit_key_mac)) {
 		return { action: 'queue', reason: 'edit key does not match', changed };
 	}
 

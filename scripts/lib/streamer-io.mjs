@@ -16,13 +16,13 @@ export const COLUMNS = [
 	'games',
 	'verified',
 	'updated',
-	'edit_key_hash',
+	'edit_key_mac',
 	'channels',
 	'schedule',
 ];
 
-/** Columns safe to publish. The key hash must never appear in a public dump. */
-export const PUBLIC_COLUMNS = COLUMNS.filter((c) => c !== 'edit_key_hash');
+/** Columns safe to publish. The key MAC must never appear in a public dump. */
+export const PUBLIC_COLUMNS = COLUMNS.filter((c) => c !== 'edit_key_mac');
 
 /**
  * YAML turns bare `2026-08-11` into a Date. Left alone it would JSON.stringify to a
@@ -43,7 +43,7 @@ export function normaliseDates(value) {
  * without this directory at all. That is the normal state before the first profile
  * is approved, not an error: treat it as no streamers.
  */
-export function listStreamerFiles(dir = STREAMER_DIR) {
+export function listYamlFiles(dir) {
 	let entries;
 	try {
 		entries = readdirSync(dir);
@@ -52,6 +52,22 @@ export function listStreamerFiles(dir = STREAMER_DIR) {
 		throw err;
 	}
 	return entries.filter((f) => f.endsWith('.yaml') || f.endsWith('.yml')).sort();
+}
+
+export function listStreamerFiles(dir = STREAMER_DIR) {
+	return listYamlFiles(dir);
+}
+
+export const GAME_DIR = 'src/data/games';
+
+/**
+ * Every game slug that exists. The schema resolves `games` with reference('games'), so
+ * a submission naming a game that has no file fails the build - and because the sync
+ * build-verifies before committing, that failure takes down the whole run rather than
+ * the one row. The sync checks against this list instead and queues the row.
+ */
+export function readGameSlugs(dir = GAME_DIR) {
+	return new Set(listYamlFiles(dir).map((f) => path.basename(f, path.extname(f))));
 }
 
 /** Call before writing, for the same reason: the directory may not exist yet. */
@@ -81,7 +97,7 @@ export function toRecord({ slug, data }) {
 		games: (data.games ?? []).join('|'),
 		verified: data.verified ? 'true' : 'false',
 		updated: data.updated ?? '',
-		edit_key_hash: data.edit_key_hash ?? '',
+		edit_key_mac: data.edit_key_mac ?? '',
 		channels: JSON.stringify(data.channels ?? []),
 		schedule: JSON.stringify(data.schedule ?? DEFAULT_SCHEDULE),
 	};
@@ -120,7 +136,7 @@ export function fromRecord(record) {
 
 	if (record.bio) data.bio = record.bio;
 	if (record.avatar) data.avatar = record.avatar;
-	if (record.edit_key_hash) data.edit_key_hash = record.edit_key_hash;
+	if (record.edit_key_mac) data.edit_key_mac = record.edit_key_mac;
 
 	return data;
 }
