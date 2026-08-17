@@ -10,8 +10,11 @@
  *   SHEET_ID                     the spreadsheet id from its URL
  *   SHEET_RANGE                  optional, defaults to "Submissions!A:Z"
  *
- * The sheet must stay private. Publish-to-web would expose the edit key hashes,
- * and a published hash can be replayed to impersonate a streamer.
+ * The sheet must stay private. Publish-to-web would expose the edit key hashes, and a
+ * hash is what the browser submits to prove an edit is genuine, so anyone holding one
+ * can impersonate that streamer. The repo stores a peppered MAC rather than the hash
+ * for exactly this reason, which leaves this sheet as the only place the raw hashes
+ * exist - and therefore the only thing left to protect.
  *
  * No dependencies: the service account JWT is signed with node:crypto and the
  * Sheets REST API is called with fetch.
