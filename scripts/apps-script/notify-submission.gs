@@ -20,24 +20,15 @@ var CHAT_KEY = 'TELEGRAM_CHAT_ID';
 var EXPORT_URL = 'https://sstreamer.pages.dev/export.csv';
 
 /**
- * Shown as "touches:" so you can see the shape of a submission without opening the
- * sheet. Deliberately excludes edit_key_hash, and so does everything below: see
- * sendTelegram for why that matters.
+ * Kept out of the "Touches:" line. `edit_key_hash` because it must never leave the
+ * sheet, see sendTelegram; the rest because they already have a line of their own.
+ *
+ * A list of what to hide rather than a list of what to show, on purpose. The first
+ * version named the fields to report, and the day a `channels` question was added to
+ * the form it went unreported: the submission was fine, the alert just could not see
+ * it. Anything added to the form from now on shows up here without this file changing.
  */
-var REPORTED_FIELDS = [
-	'aliases',
-	'bio',
-	'timezone',
-	'games',
-	'platform',
-	'handle',
-	'game',
-	'days',
-	'start',
-	'duration_min',
-	'title',
-	'streams',
-];
+var UNLISTED_FIELDS = ['timestamp', 'name', 'slug', 'avatar_url', 'edit_key_hash'];
 
 /**
  * Trigger entry point. Attach as an installable "On form submit" trigger; the simple
@@ -69,8 +60,8 @@ function onSubmissionSubmit(e) {
 	var name = field('name');
 	var avatar = field('avatar_url');
 
-	var touched = REPORTED_FIELDS.filter(function (key) {
-		return field(key) !== '';
+	var touched = Object.keys(answers).filter(function (key) {
+		return UNLISTED_FIELDS.indexOf(key) === -1 && field(key) !== '';
 	});
 
 	var lines = [
@@ -85,7 +76,7 @@ function onSubmissionSubmit(e) {
 	var known = isKnownSlug(slug);
 	if (known === true) {
 		lines.push('Existing profile. The sync applies it if the edit key matches.');
-		lines.push('Queued instead if it changes the name or picture.');
+		lines.push('Queued instead if it changes the name or picture, or drops a channel.');
 	} else if (known === false) {
 		lines.push('NEW profile. Nothing is written until you tick approved in the sheet.');
 	} else {
