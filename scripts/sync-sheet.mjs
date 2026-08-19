@@ -36,6 +36,7 @@ import {
 	slugify,
 	submissionToPatch,
 } from './lib/sync-rules.mjs';
+import { HttpError, fetchWithRetry } from './lib/http.mjs';
 
 const dryRun = process.argv.includes('--dry-run');
 const SCOPE = 'https://www.googleapis.com/auth/spreadsheets.readonly';
@@ -101,8 +102,23 @@ function signJwt({ client_email, private_key }) {
 	}
 }
 
+/** Logged so a run that succeeded after wobbling says so, instead of looking clean. */
+function noteRetry({ label, attempt, attempts, delay, reason }) {
+	console.log(`  ${label}: ${reason}, retrying in ${Math.round(delay / 1000)}s (${attempt}/${attempts - 1})`);
+}
+
+async function getJson(label, url, options) {
+	try {
+		const res = await fetchWithRetry(label, url, options, { onRetry: noteRetry });
+		return await res.json();
+	} catch (err) {
+		if (err instanceof HttpError) fail(err.message);
+		throw err;
+	}
+}
+
 async function getAccessToken(creds) {
-	const res = await fetch('https://oauth2.googleapis.com/token', {
+	const { access_token } = await getJson('token request', 'https://oauth2.googleapis.com/token', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 		body: new URLSearchParams({
@@ -110,8 +126,6 @@ async function getAccessToken(creds) {
 			assertion: signJwt(creds),
 		}),
 	});
-	if (!res.ok) fail(`token request failed: ${res.status} ${await res.text()}`);
-	const { access_token } = await res.json();
 	if (!access_token) fail('token response had no access_token');
 	return access_token;
 }
@@ -120,9 +134,9 @@ async function fetchRows(token, sheetId, range) {
 	const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
 		sheetId,
 	)}/values/${encodeURIComponent(range)}`;
-	const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-	if (!res.ok) fail(`sheet read failed: ${res.status} ${await res.text()}`);
-	const { values = [] } = await res.json();
+	const { values = [] } = await getJson('sheet read', url, {
+		headers: { Authorization: `Bearer ${token}` },
+	});
 	if (values.length < 2) return [];
 
 	// Normalise headers so "Edit Key Hash" and "edit_key_hash" both work.
